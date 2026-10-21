@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Antarctical
+Comment=Google Calendar for your desktop
+Exec=antarctical
+Icon=x-office-calendar
+Terminal=false
+Categories=Office;Calendar;
+StartupWMClass=com.korora.Antarctical

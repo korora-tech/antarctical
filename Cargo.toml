@@ -1,21 +1,31 @@
-[workspace]
-members = [
-    "crates/*",
-]
-resolver = "2"
+[package]
+name = "antarctical"
+version = "0.1.0"
+edition = "2024"
+description = "Antarctical: a native GPUI Google Calendar viewer for Linux"
+license = "Apache-2.0"
 
-[workspace.dependencies]
-gtk4 = "0.9"
-libadwaita = "0.7"
-glib = "0.20"
-gio = "0.20"
-gdk4 = "0.9"
+[dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", rev = "28d0a3547f16b9609b301b48ab363bfca649c864", default-features = false }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "28d0a3547f16b9609b301b48ab363bfca649c864", default-features = false, features = ["wayland", "x11"] }
+async-channel = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+jiff = "0.2.38"
+# Blocking HTTPS with rustls (ring, webpki-roots); no tokio. Runs on the sync worker thread.
+ureq = { version = "=3.4.2", default-features = false, features = ["rustls", "json"] }
+url = "2.5"
+sha2 = "0.10.9"
+base64 = "0.22"
+getrandom = "0.3"
+# The OAuth client (id + secret) and refresh token live in the Secret Service; never on disk.
+keyring-core = "1"
+zbus-secret-service-keyring-store = { version = "1", features = ["rt-async-io-crypto-rust"] }
+ksni = { version = "0.3.7", default-features = false, features = ["async-io", "blocking"] }
+notify-rust = { version = "4.18", default-features = false, features = ["z"] }
+open = "5.4"
+unicode-segmentation = "1"
 
 [profile.release]
-lto = true
+lto = "thin"
 codegen-units = 1
-panic = "abort"
-strip = true
-
-[profile.dev]
-debug = true

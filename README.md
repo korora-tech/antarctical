@@ -1,113 +1,105 @@
-# Epochal
+# Antarctical
 
-A modern GTK4 Rust application built with Blueprint UI, managed by Nix flake with Crane.
+A native Google Calendar viewer for Linux, built with GPUI. Antarctical shows your Google calendars in month, week, day and agenda views. It puts today's date and agenda in the system tray and shows desktop notifications for event reminders. Access is read-only: Antarctical never changes your calendar.
 
-## Quick Start
+Antarctical connects to Google with an OAuth client that **you** own. The client ID, client secret and refresh token are stored only in your system keyring (the freedesktop Secret Service: GNOME Keyring, KWallet, KeePassXC…). Calendar data is kept in memory.
 
-```bash
-# Enter development environment
-nix develop
+## Run
 
-# Build and run
-cargo run -p epochal-app
-
-# Or build with Nix
-nix build
+```sh
+nix develop -c cargo run --release          # build and launch
+nix run                                     # or build the package and launch it
+nix develop -c cargo run -- --demo          # generated calendars, no Google account
+nix develop -c cargo run -- --hidden        # start in the tray (for autostart)
 ```
+
+The dev shell provides the Rust toolchain and GPUI's native dependencies. Wayland and X11 are both supported. The tray needs a StatusNotifierItem host (KDE, most wlroots/niri bars, or GNOME with the AppIndicator extension). Without one, Antarctical runs without a tray and quits when its window closes.
+
+## Connect Google Calendar
+
+1. In [Google Cloud](https://console.cloud.google.com/), create a project and [enable the Google Calendar API](https://console.cloud.google.com/apis/library/calendar-json.googleapis.com).
+2. Configure the [OAuth consent screen](https://console.cloud.google.com/auth/overview). External is fine; add your Google account as a test user.
+3. Under [Credentials](https://console.cloud.google.com/apis/credentials), create an **OAuth client ID** with application type **Desktop app**.
+4. In Antarctical, open **Settings** (`ctrl-,`), paste the client ID and client secret, and click **Save to keyring**.
+5. Click **Sign in with Google**. Your browser opens Google's consent page; approve it and return to Antarctical.
+
+Sign-in uses the installed-app flow: authorization code with PKCE and a one-shot loopback redirect to `http://127.0.0.1:<random port>`. The only scope requested is `calendar.readonly`.
+
+### Where secrets live
+
+| Secret | Where |
+|---|---|
+| OAuth client ID + secret | Keyring item `Antarctical: Google OAuth client` (service `com.korora.Antarctical`) |
+| Refresh token | Keyring item `Antarctical: Google refresh token` |
+| Access token | Memory only |
+
+- **Changing the client:** saving a different client ID removes the stored refresh token, because a token belongs to the client that issued it. You then sign in again.
+- **Sign out:** revokes the token with Google and deletes it from the keyring.
+- **Remove from keyring:** deletes the client as well.
+- **Client secret field:** never pre-filled. Leave it blank to keep the stored secret for the same client ID.
+
+Preferences that are not secret (visible calendars, view, reminders, 24-hour clock) are saved in `$XDG_CONFIG_HOME/antarctical/settings.json`. `--demo` never writes this file.
+
+## Using it
+
+| Key | Action |
+|---|---|
+| `t` | Today |
+| `←` `→` / `h` `l` | Previous / next month, week, day or agenda page |
+| `m` `w` `d` `a` | Month, week, day, agenda |
+| `esc` | Close the event panel, or leave Settings |
+| `ctrl-,` | Settings |
+| `ctrl-r` | Refresh now |
+| `ctrl-w` | Close the window (Antarctical stays in the tray) |
+| `ctrl-q` | Quit |
+
+- **Details:** click an event to see its time, place, guests and description. From there you can join its video call or open it in Google Calendar.
+- **Navigation:** click a day in the month grid or in the sidebar's mini calendar to open it.
+- **Calendar visibility:** checkboxes in the sidebar hide or show calendars. Until you toggle one, each calendar follows Google's own "show in list" setting.
+- **Declined events:** shown struck through.
+
+## Sync
+
+- **Recurring events:** Google expands them (`singleEvents=true`), so every instance is a plain event.
+- **What gets fetched:** each view asks for the months it shows. The previous, current and next month are always kept fresh for the tray and reminders.
+- **Refresh:** every 5 minutes, and on `ctrl-r`.
+- **Keyring locked at start:** unlock it and press `ctrl-r` to read the credentials again.
+- **Errors:** after a network error the banner says so, the current data stays on screen, and the sync is retried a minute later. A calendar that Google refuses (unsubscribed, permissions changed) is skipped and named in the banner.
+
+## Reminders
+
+Popup reminders from Google become desktop notifications (org.freedesktop.Notifications).
+- **Defaults:** a calendar's default reminders apply to timed events that use defaults.
+- **Skipped:** declined events, and events on calendars hidden in the sidebar, never notify. A reminder that came due while Antarctical was not running is still shown for up to 10 minutes.
+- **Off switch:** Settings → Preferences.
 
 ## Development
 
-The project uses:
-- **Nix flake** with **Crane** for reproducible builds
-- **GTK4** with **libadwaita** for modern UI
-- **Blueprint UI** for declarative interface design
-- **Cargo workspace** for modular architecture
-
-### Project Structure
-
-```
-epochal/
-├── flake.nix                    # Nix flake configuration
-├── Cargo.toml                   # Workspace configuration with BDD tests
-├── features/                    # BDD Feature files (Gherkin)
-│   ├── app_lifecycle.feature    # Application startup/shutdown tests
-│   ├── system_tray.feature      # System tray integration tests
-│   ├── ui_interactions.feature  # UI component tests
-│   └── user_workflows.feature   # End-to-end workflow tests
-├── tests/
-│   ├── behaviours.rs            # BDD test runner
-│   └── behaviours/              # BDD test implementation
-│       ├── common/              # Test utilities and World pattern
-│       └── steps/               # Step definitions for each domain
-├── crates/
-│   └── epochal-app/              # Main GTK4 application
-│       ├── src/main.rs          # Application entry point
-│       ├── build.rs             # Build script
-│       └── ui/                  # Blueprint UI files
-│           └── window.blp       # Main window layout
-└── data/
-    ├── resources.gresource.xml  # Resource bundle
-    └── com.korora.Epochal.desktop # Desktop entry
+```sh
+nix develop -c cargo test                              # unit tests
+nix develop -c cargo clippy --all-targets -- -D warnings
+nix develop -c cargo fmt
 ```
 
-### Development Commands
+| Module | Purpose |
+|---|---|
+| `src/google/oauth.rs` | PKCE, loopback redirect, token exchange/refresh/revoke |
+| `src/google/api.rs` | `calendarList.list`, `events.list`, JSON → model |
+| `src/secrets.rs` | Secret Service storage via `keyring-core` |
+| `src/sync.rs` | Sync worker thread: credentials, fetching, retries |
+| `src/demo.rs` | `--demo` worker with generated data |
+| `src/store.rs` | UI state built from sync events |
+| `src/tray.rs` | StatusNotifierItem tray and its date icon |
+| `src/reminders.rs` | When reminders are due |
+| `src/layout.rs` | Side-by-side placement of overlapping events |
+| `src/ui/` | GPUI views: main window, calendar views, settings, text input |
 
-```bash
-# Auto-rebuild on changes
-cargo watch -x "run -p epochal-app"
+## Not yet
 
-# Format code
-cargo fmt
+- Creating or editing events, and replying to invitations (v1 is read-only).
+- An on-disk cache: data is fetched again at every start.
+- Single-instance handling: launching it twice gives two windows and two tray icons.
 
-# Check with clippy
-cargo clippy
+## License
 
-# Build with Nix (for distribution)
-nix build
-
-# Check formatting and clippy with Nix
-nix flake check
-```
-
-### BDD Testing
-
-The project uses Cucumber-rs for Behavior-Driven Development testing:
-
-```bash
-# Run all BDD tests
-just test-bdd
-cargo test --test behaviours
-
-# Run tests headless (for CI)
-just test-bdd-headless
-xvfb-run cargo test --test behaviours
-
-# Run specific test categories
-just test-smoke          # @smoke tagged scenarios
-just test-ui             # @ui tagged scenarios
-
-# Run tests with specific tags
-just test-bdd-tags "@integration"
-```
-
-**Test Categories:**
-- `@smoke` - Essential functionality tests
-- `@ui` - User interface component tests
-- `@integration` - System integration tests
-- `@headless` - Tests that run without display
-- `@tray` - System tray functionality tests
-
-## Blueprint UI
-
-Blueprint files (`*.blp`) are automatically compiled to GTK UI files (`*.ui`) during build.
-The GTK Inspector is available during development with `Ctrl+Shift+I`.
-
-## Features
-
-- Modern GTK4/Adwaita interface
-- Responsive layout with breakpoints
-- Sidebar navigation
-- Blueprint UI compilation
-- GResource bundling
-- Desktop integration
-- Nix reproducible builds
+Apache-2.0

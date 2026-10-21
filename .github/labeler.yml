@@ -9,10 +9,7 @@ documentation:
 tests:
   - changed-files:
     - any-glob-to-any-file:
-      - 'crates/bdd-tests/**'
-      - 'features/**'
-      - '**/*_test.rs'
-      - '**/*_tests.rs'
+      - 'tests/**'
 
 # Add 'ci' label to CI/CD changes
 ci:
@@ -26,7 +23,8 @@ ci:
 app:
   - changed-files:
     - any-glob-to-any-file:
-      - 'crates/epochal-app/**'
+      - 'src/**'
+      - 'data/**'
 
 # Add 'dependencies' label to dependency changes
 dependencies:
@@ -37,9 +35,3 @@ dependencies:
       - 'flake.nix'
       - 'flake.lock'
 
-# Add 'blueprint' label to Blueprint UI changes
-blueprint:
-  - changed-files:
-    - any-glob-to-any-file:
-      - '**/*.blp'
-      - '**/*.ui'
