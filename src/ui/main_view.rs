@@ -329,7 +329,7 @@ impl MainView {
             )
     }
 
-    fn banner(&self, store: &Store) -> Option<Div> {
+    fn banner(&self, store: &Store, cx: &Context<Self>) -> Option<Div> {
         let problem = store.problem.clone()?;
         Some(
             div()
@@ -350,10 +350,19 @@ impl MainView {
                 )
                 .child(
                     div()
+                        .flex_1()
+                        .min_w(px(0.0))
                         .text_size(px(12.0))
                         .text_color(rgb(0xffd9a0))
                         .child(problem),
-                ),
+                )
+                .child(ghost_button(
+                    "dismiss-problem",
+                    "✕",
+                    Some(self.listener_click(cx, |this, _, cx| {
+                        this.store.read(cx).send(Command::DismissProblems)
+                    })),
+                )),
         )
     }
 
@@ -440,7 +449,7 @@ impl MainView {
                                         SharedString::from(format!("cal-{}", c.id)),
                                         // The primary calendar is named after its account,
                                         // which already heads the group.
-                                        if c.name == c.account {
+                                        if c.primary {
                                             "Primary".to_string()
                                         } else {
                                             c.name.clone()
@@ -520,6 +529,7 @@ impl MainView {
         let (dot, line1) = match (&store.auth, store.accounts.as_slice()) {
             (AuthState::Starting, _) => (DISABLED, "Opening keyring…".to_string()),
             (AuthState::NeedsClient, _) => (AMBER, "Google client not set up".into()),
+            (AuthState::Locked, _) => (AMBER, "Keyring locked".into()),
             (AuthState::Demo, _) => (ACCENT, "Demo data".into()),
             _ if store.signing_in.is_some() => (AMBER, "Waiting for browser…".into()),
             (AuthState::Ready, []) => (AMBER, "Not signed in".into()),
@@ -596,6 +606,14 @@ impl MainView {
         let content = match &store.auth {
             AuthState::Demo => return None,
             AuthState::Ready if store.signed_in() => return None,
+            AuthState::Locked => card("Unlock your keyring")
+                .child(body_text("Antarctical could not read your Google credentials from the system keyring. Unlock it (your desktop may have shown a prompt), then retry."))
+                .child(div().flex().child(button(
+                    "retry-keyring",
+                    "Retry",
+                    ButtonStyle::Primary,
+                    Some(self.listener_click(cx, |this, _, cx| this.store.read(cx).send(Command::Refresh))),
+                ))),
             AuthState::Starting => card("Opening your keyring…")
                 .child(body_text("Antarctical keeps your Google credentials in the system keyring. Your desktop may ask you to unlock it.")),
             AuthState::NeedsClient => card("Connect Google Calendar")
@@ -861,7 +879,7 @@ impl Render for MainView {
         let store_entity = self.store.clone();
         let store = store_entity.read(cx);
         let header = self.header(cx);
-        let banner = self.banner(store);
+        let banner = self.banner(store, cx);
         let sidebar = self.sidebar(store, cx);
         let toast = self.toast(store);
 

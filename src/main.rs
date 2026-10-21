@@ -246,6 +246,7 @@ fn tray_content(store: &Store) -> TrayContent {
         .find(|e| !e.is_all_day() && e.instants(&tz).0 > now.timestamp());
     let tooltip = match (&store.auth, next) {
         (sync::AuthState::NeedsClient, _) => "Set up Google in Settings".to_string(),
+        (sync::AuthState::Locked, _) => "Keyring locked".to_string(),
         _ if !store.signed_in() => "Not signed in".to_string(),
         (_, Some(e)) => format!(
             "Next: {} at {}",

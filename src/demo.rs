@@ -61,6 +61,7 @@ fn run(rx: mpsc::Receiver<Command>, tx: async_channel::Sender<SyncEvent>) {
             Command::AddAccount | Command::RemoveAccount(_) | Command::CancelSignIn => emit(
                 SyncEvent::Notice("Demo mode: no Google account is used".into()),
             ),
+            Command::DismissProblems => emit(SyncEvent::Problem(None)),
             Command::Shutdown => break,
             Command::SignInFinished(..) => {}
         }

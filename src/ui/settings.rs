@@ -231,6 +231,7 @@ impl Render for SettingsView {
                                     .text_color(rgb(MUTED))
                                     .child(match (&stored_id, demo) {
                                         (_, true) => "Demo mode: kept in memory, not in the keyring".to_string(),
+                                        (None, false) if auth == AuthState::Locked => "Keyring locked: unlock it and press Ctrl+R".to_string(),
                                         (Some(_), false) => "Client ID and secret are stored in the keyring".to_string(),
                                         (None, false) => "Nothing stored yet".to_string(),
                                     }),
@@ -260,6 +261,7 @@ impl Render for SettingsView {
         let account_card = {
             let intro = match &auth {
                 AuthState::Starting => "Reading the keyring…",
+                AuthState::Locked => "The keyring is locked. Unlock it and press Ctrl+R.",
                 AuthState::NeedsClient => "Save an OAuth client above first.",
                 AuthState::Demo => "Demo mode: showing generated accounts.",
                 AuthState::Ready if accounts.is_empty() => {

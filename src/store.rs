@@ -76,6 +76,7 @@ impl Store {
             SyncEvent::Calendars(cals) => {
                 let ids: HashSet<&str> = cals.iter().map(|c| c.id.as_str()).collect();
                 self.chunks.retain(|(cal, _), _| ids.contains(cal.as_str()));
+                self.migrate_visibility(&cals);
                 self.calendars = cals;
             }
             SyncEvent::Month {
@@ -89,6 +90,25 @@ impl Store {
             SyncEvent::Synced(t) => self.last_sync = Some(t),
             SyncEvent::Problem(p) => self.problem = p,
             SyncEvent::Notice(n) => self.notice = Some((n, Instant::now())),
+        }
+    }
+
+    /// Visibility used to be keyed by Google's calendar id; it is now keyed by
+    /// [`Calendar::key`]. Carry old choices over the first time each calendar is seen.
+    fn migrate_visibility(&mut self, cals: &[Calendar]) {
+        let vis = &mut self.prefs.calendar_visibility;
+        let mut changed = false;
+        for c in cals {
+            if !vis.contains_key(&c.id)
+                && let Some(&v) = vis.get(&c.remote_id)
+            {
+                vis.insert(c.id.clone(), v);
+                changed = true;
+            }
+        }
+        if changed {
+            vis.retain(|k, _| k.contains('/'));
+            self.prefs.save();
         }
     }
 
@@ -125,7 +145,8 @@ impl Store {
     }
 
     /// Events on visible calendars overlapping `[from, to)`, de-duplicated (an event spanning
-    /// months is in several chunks) and sorted all-day first, then by start.
+    /// months is in several chunks; a calendar shared with two accounts lists it twice) and
+    /// sorted all-day first, then by start.
     pub fn events_between(&self, from: Date, to: Date, tz: &TimeZone) -> Vec<Event> {
         let months = months_between(from, to);
         let mut seen = HashSet::new();
@@ -136,7 +157,7 @@ impl Store {
                     continue;
                 };
                 for e in events {
-                    if !seen.insert((e.calendar_id.as_str(), e.id.as_str())) {
+                    if !seen.insert((cal.remote_id.as_str(), e.id.as_str())) {
                         continue;
                     }
                     let mut d = from;
@@ -196,7 +217,12 @@ mod tests {
 
     fn store() -> Store {
         let (tx, _rx) = std::sync::mpsc::channel();
-        let mut s = Store::new(SyncHandle::from_sender(tx), true, Prefs::default());
+        // Ephemeral: tests must never write the user's settings.json.
+        let prefs = Prefs {
+            ephemeral: true,
+            ..Prefs::default()
+        };
+        let mut s = Store::new(SyncHandle::from_sender(tx), true, prefs);
         s.apply(SyncEvent::Calendars(vec![
             Calendar {
                 id: "a".into(),
@@ -286,5 +312,54 @@ mod tests {
         assert!(s.signed_in());
         s.apply(SyncEvent::Accounts(vec![]));
         assert!(!s.signed_in());
+    }
+
+    #[test]
+    fn calendar_shared_by_two_accounts_shows_each_event_once() {
+        let mut s = store();
+        let shared = |account: &str| Calendar {
+            id: Calendar::key(account, "team@group"),
+            account: account.into(),
+            remote_id: "team@group".into(),
+            name: "Team".into(),
+            color: 3,
+            primary: false,
+            default_reminders: vec![],
+            selected_upstream: true,
+        };
+        s.apply(SyncEvent::Calendars(vec![shared("me@x"), shared("work@x")]));
+        for account in ["me@x", "work@x"] {
+            s.apply(SyncEvent::Month {
+                calendar_id: Calendar::key(account, "team@group"),
+                month: date(2026, 10, 1),
+                events: vec![all_day(
+                    &Calendar::key(account, "team@group"),
+                    "standup",
+                    date(2026, 10, 5),
+                    date(2026, 10, 6),
+                )],
+            });
+        }
+        assert_eq!(s.events_on(date(2026, 10, 5), &TimeZone::UTC).len(), 1);
+    }
+
+    #[test]
+    fn visibility_keyed_by_google_id_carries_over() {
+        let mut s = store();
+        s.prefs
+            .calendar_visibility
+            .insert("team@group".into(), false);
+        s.apply(SyncEvent::Calendars(vec![Calendar {
+            id: Calendar::key("me@x", "team@group"),
+            account: "me@x".into(),
+            remote_id: "team@group".into(),
+            name: "Team".into(),
+            color: 3,
+            primary: false,
+            default_reminders: vec![],
+            selected_upstream: true,
+        }]));
+        assert!(!s.is_visible(&s.calendars[0]));
+        assert!(!s.prefs.calendar_visibility.contains_key("team@group"));
     }
 }

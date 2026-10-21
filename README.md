@@ -67,7 +67,8 @@ Preferences that are not secret (visible calendars, view, reminders, 24-hour clo
 - **Recurring events:** Google expands them (`singleEvents=true`), so every instance is a plain event.
 - **What gets fetched:** each view asks for the months it shows. The previous, current and next month are always kept fresh for the tray and reminders.
 - **Refresh:** every 5 minutes, and on `ctrl-r`.
-- **Keyring locked at start:** unlock it and press `ctrl-r` to read the credentials again.
+- **Keyring locked at start:** Antarctical says so and waits; unlock it and press **Retry** (or `ctrl-r`) to read the credentials again.
+- **Banner:** sync problems show at the top. Messages about dropped accounts stay until you add the account again or close the banner with ✕.
 - **Errors:** after a network error the banner says so, the current data stays on screen, and the sync is retried a minute later. A calendar that Google refuses (unsubscribed, permissions changed) is skipped and named in the banner.
 
 ## Reminders
