@@ -97,8 +97,10 @@ pub fn authorize_url(client_id: &str, redirect_uri: &str, challenge: &str, state
         .append_pair("code_challenge_method", "S256")
         .append_pair("state", state)
         // A refresh token is only issued with offline access, and only reliably with consent.
+        // select_account: always show the picker, so "Add account" can add a second account
+        // instead of silently re-using the one signed in to the browser.
         .append_pair("access_type", "offline")
-        .append_pair("prompt", "consent");
+        .append_pair("prompt", "select_account consent");
     url.into()
 }
 
@@ -396,6 +398,7 @@ mod tests {
         assert_eq!(q["code_challenge_method"], "S256");
         assert_eq!(q["scope"], SCOPE);
         assert_eq!(q["access_type"], "offline");
+        assert_eq!(q["prompt"], "select_account consent");
         assert_eq!(q["state"], "st");
     }
 

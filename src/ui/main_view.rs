@@ -418,26 +418,46 @@ impl MainView {
             })));
         }
 
-        let calendars = div()
-            .flex()
-            .flex_col()
-            .gap(px(1.0))
-            .children(store.calendars.iter().map(|c| {
-                let id = c.id.clone();
-                checkbox_row(
-                    SharedString::from(format!("cal-{}", c.id)),
-                    c.name.clone(),
-                    c.color,
-                    store.is_visible(c),
-                    self.listener_click(cx, move |this, _, cx| {
-                        let id = id.clone();
-                        this.store.update(cx, |s, cx| {
-                            s.toggle_calendar(&id);
-                            cx.notify();
-                        });
-                    }),
-                )
-            }));
+        // One group per account, headed by its email.
+        let calendars =
+            div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .children(
+                    store
+                        .calendars_by_account()
+                        .into_iter()
+                        .map(|(account, cals)| {
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(1.0))
+                                .child(div().pb_1().child(caption(account.to_uppercase())))
+                                .children(cals.into_iter().map(|c| {
+                                    let id = c.id.clone();
+                                    checkbox_row(
+                                        SharedString::from(format!("cal-{}", c.id)),
+                                        // The primary calendar is named after its account,
+                                        // which already heads the group.
+                                        if c.name == c.account {
+                                            "Primary".to_string()
+                                        } else {
+                                            c.name.clone()
+                                        },
+                                        c.color,
+                                        store.is_visible(c),
+                                        self.listener_click(cx, move |this, _, cx| {
+                                            let id = id.clone();
+                                            this.store.update(cx, |s, cx| {
+                                                s.toggle_calendar(&id);
+                                                cx.notify();
+                                            });
+                                        }),
+                                    )
+                                }))
+                        }),
+                );
 
         div()
             .w(px(SIDEBAR_W))
@@ -491,23 +511,20 @@ impl MainView {
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .when(!store.calendars.is_empty(), |d| {
-                        d.child(caption("CALENDARS")).child(calendars)
-                    }),
+                    .when(!store.calendars.is_empty(), |d| d.child(calendars)),
             )
             .child(self.account_box(store, cx))
     }
 
     fn account_box(&self, store: &Store, cx: &Context<Self>) -> Div {
-        let (dot, line1) = match &store.auth {
-            AuthState::Starting => (DISABLED, "Opening keyring…".to_string()),
-            AuthState::NeedsClient => (AMBER, "Google client not set up".into()),
-            AuthState::SignedOut => (AMBER, "Not signed in".into()),
-            AuthState::SigningIn { .. } => (AMBER, "Waiting for browser…".into()),
-            AuthState::SignedIn { account } => {
-                (GREEN, account.clone().unwrap_or_else(|| "Signed in".into()))
-            }
-            AuthState::Demo => (ACCENT, "Demo data".into()),
+        let (dot, line1) = match (&store.auth, store.accounts.as_slice()) {
+            (AuthState::Starting, _) => (DISABLED, "Opening keyring…".to_string()),
+            (AuthState::NeedsClient, _) => (AMBER, "Google client not set up".into()),
+            (AuthState::Demo, _) => (ACCENT, "Demo data".into()),
+            _ if store.signing_in.is_some() => (AMBER, "Waiting for browser…".into()),
+            (AuthState::Ready, []) => (AMBER, "Not signed in".into()),
+            (AuthState::Ready, [one]) => (GREEN, one.clone()),
+            (AuthState::Ready, many) => (GREEN, format!("{} Google accounts", many.len())),
         };
         let clock = store.prefs.clock_24h;
         let line2 = if store.busy {
@@ -577,7 +594,8 @@ impl MainView {
     /// What to show instead of a calendar when there is no data source yet.
     fn auth_card(&self, store: &Store, cx: &Context<Self>) -> Option<AnyElement> {
         let content = match &store.auth {
-            AuthState::SignedIn { .. } | AuthState::Demo => return None,
+            AuthState::Demo => return None,
+            AuthState::Ready if store.signed_in() => return None,
             AuthState::Starting => card("Opening your keyring…")
                 .child(body_text("Antarctical keeps your Google credentials in the system keyring. Your desktop may ask you to unlock it.")),
             AuthState::NeedsClient => card("Connect Google Calendar")
@@ -590,38 +608,19 @@ impl MainView {
                     ButtonStyle::Primary,
                     Some(self.listener_click(cx, |this, window, cx| this.show_settings(window, cx))),
                 ))),
-            AuthState::SignedOut => card("Sign in to Google")
-                .child(body_text("Your browser will open Google's consent page. Antarctical only asks for read-only access to your calendars."))
-                .child(div().flex().child(button(
-                    "sign-in",
-                    "Sign in with Google",
-                    ButtonStyle::Primary,
-                    Some(self.listener_click(cx, |this, _, cx| this.store.read(cx).send(Command::SignIn))),
-                ))),
-            AuthState::SigningIn { url } => {
-                let url = url.clone();
-                card("Finish signing in in your browser")
+            AuthState::Ready => match store.signing_in.clone() {
+                None => card("Sign in to Google")
+                    .child(body_text("Your browser will open Google's consent page. Antarctical only asks for read-only access to your calendars. You can add more accounts later in Settings."))
+                    .child(div().flex().child(button(
+                        "sign-in",
+                        "Sign in with Google",
+                        ButtonStyle::Primary,
+                        Some(self.listener_click(cx, |this, _, cx| this.store.read(cx).send(Command::AddAccount))),
+                    ))),
+                Some(url) => card("Finish signing in in your browser")
                     .child(body_text("Approve access on Google's page. If no browser opened, copy the link and open it yourself."))
-                    .child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .child(button(
-                                "copy-link",
-                                "Copy sign-in link",
-                                ButtonStyle::Secondary,
-                                Some(self.listener_click(cx, move |_, _, cx| {
-                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(url.clone()))
-                                })),
-                            ))
-                            .child(button(
-                                "cancel-sign-in",
-                                "Cancel",
-                                ButtonStyle::Secondary,
-                                Some(self.listener_click(cx, |this, _, cx| this.store.read(cx).send(Command::CancelSignIn))),
-                            )),
-                    )
-            }
+                    .child(sign_in_actions(url, |this: &mut Self, cx| this.store.read(cx).send(Command::CancelSignIn), self, cx)),
+            },
         };
         Some(
             div()
@@ -646,7 +645,13 @@ impl MainView {
         let color = store.color_of(&event);
         let cal_name = store
             .calendar(&event.calendar_id)
-            .map(|c| c.name.clone())
+            .map(|c| {
+                if store.accounts.len() > 1 && c.name != c.account {
+                    format!("{} · {}", c.name, c.account)
+                } else {
+                    c.name.clone()
+                }
+            })
             .unwrap_or_default();
         let clock = store.prefs.clock_24h;
 
@@ -937,4 +942,30 @@ impl Render for MainView {
             )
             .children(toast)
     }
+}
+
+/// "Copy sign-in link" + "Cancel", shown while a browser sign-in is pending.
+fn sign_in_actions(
+    url: String,
+    cancel: impl Fn(&mut MainView, &mut Context<MainView>) + 'static,
+    view: &MainView,
+    cx: &Context<MainView>,
+) -> Div {
+    div()
+        .flex()
+        .gap_2()
+        .child(button(
+            "copy-link",
+            "Copy sign-in link",
+            ButtonStyle::Secondary,
+            Some(view.listener_click(cx, move |_, _, cx| {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(url.clone()))
+            })),
+        ))
+        .child(button(
+            "cancel-sign-in",
+            "Cancel",
+            ButtonStyle::Secondary,
+            Some(view.listener_click(cx, move |this, _, cx| cancel(this, cx))),
+        ))
 }

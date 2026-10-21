@@ -30,6 +30,7 @@ fn run(rx: mpsc::Receiver<Command>, tx: async_channel::Sender<SyncEvent>) {
         "demo.apps.googleusercontent.com".into(),
     )));
     emit(SyncEvent::Auth(AuthState::Demo));
+    emit(SyncEvent::Accounts(vec![PERSONAL.into(), WORK.into()]));
     emit(SyncEvent::Calendars(cals.clone()));
     let today = Zoned::now().date();
     let send_months = |months: &[Date]| {
@@ -57,18 +58,23 @@ fn run(rx: mpsc::Receiver<Command>, tx: async_channel::Sender<SyncEvent>) {
                 ));
             }
             Command::ClearClient => emit(SyncEvent::Client(None)),
-            Command::SignIn | Command::SignOut | Command::CancelSignIn => emit(SyncEvent::Notice(
-                "Demo mode: no Google account is used".into(),
-            )),
+            Command::AddAccount | Command::RemoveAccount(_) | Command::CancelSignIn => emit(
+                SyncEvent::Notice("Demo mode: no Google account is used".into()),
+            ),
             Command::Shutdown => break,
             Command::SignInFinished(..) => {}
         }
     }
 }
 
+const PERSONAL: &str = "you@example.com";
+const WORK: &str = "you@work.example";
+
 fn calendars() -> Vec<Calendar> {
-    let cal = |id: &str, name: &str, color, primary| Calendar {
-        id: id.into(),
+    let cal = |account: &str, id: &str, name: &str, color, primary| Calendar {
+        id: Calendar::key(account, id),
+        account: account.into(),
+        remote_id: id.into(),
         name: name.into(),
         color,
         primary,
@@ -76,10 +82,10 @@ fn calendars() -> Vec<Calendar> {
         selected_upstream: true,
     };
     vec![
-        cal("you@example.com", "you@example.com", 0x7986cb, true),
-        cal("team", "Platform team", 0x33b679, false),
-        cal("personal", "Personal", 0xf4511e, false),
-        cal("holidays", "Holidays", 0x8e24aa, false),
+        cal(PERSONAL, PERSONAL, PERSONAL, 0xf4511e, true),
+        cal(PERSONAL, "holidays", "Holidays", 0x8e24aa, false),
+        cal(WORK, WORK, WORK, 0x7986cb, true),
+        cal(WORK, "team", "Platform team", 0x33b679, false),
     ]
 }
 
@@ -126,8 +132,8 @@ fn events_for(cal: &Calendar, month: Date, today: Date, tz: &TimeZone) -> Vec<Ev
         let key = d.to_string();
         let wd = d.weekday();
         let weekday = !matches!(wd, Weekday::Saturday | Weekday::Sunday);
-        match cal.id.as_str() {
-            "you@example.com" => {
+        match cal.remote_id.as_str() {
+            WORK => {
                 if wd == Weekday::Tuesday {
                     let mut e = base(
                         format!("1on1-{key}"),
@@ -217,7 +223,7 @@ fn events_for(cal: &Calendar, month: Date, today: Date, tz: &TimeZone) -> Vec<Ev
                     out.push(e);
                 }
             }
-            "personal" => {
+            PERSONAL => {
                 if matches!(wd, Weekday::Monday | Weekday::Wednesday | Weekday::Friday) {
                     out.push(base(
                         format!("gym-{key}"),
@@ -256,7 +262,7 @@ fn events_for(cal: &Calendar, month: Date, today: Date, tz: &TimeZone) -> Vec<Ev
         }
     }
     // Multi-month events must be present in every month they touch.
-    if cal.id == "personal" {
+    if cal.remote_id == PERSONAL {
         let start = add_days(month, -3);
         let mut e = base(
             format!("trip-{month}"),

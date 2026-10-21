@@ -100,7 +100,23 @@ fn error_message(body: &str) -> String {
         .unwrap_or_else(|_| body.chars().take(200).collect())
 }
 
-pub fn calendar_list(agent: &ureq::Agent, token: &str) -> Result<Vec<Calendar>, ApiError> {
+/// The account's email: the id of its primary calendar (available under `calendar.readonly`,
+/// so no extra identity scope is needed).
+pub fn primary_email(agent: &ureq::Agent, token: &str) -> Result<String, ApiError> {
+    #[derive(Deserialize)]
+    struct Primary {
+        id: String,
+    }
+    let url = url::Url::parse(&format!("{BASE}/calendars/primary?fields=id")).expect("url");
+    get::<Primary>(agent, &url, token).map(|p| p.id)
+}
+
+/// The calendars listed under `account`, primary first, then by name.
+pub fn calendar_list(
+    agent: &ureq::Agent,
+    token: &str,
+    account: &str,
+) -> Result<Vec<Calendar>, ApiError> {
     let mut out = vec![];
     let mut page: Option<String> = None;
     loop {
@@ -114,11 +130,7 @@ pub fn calendar_list(agent: &ureq::Agent, token: &str) -> Result<Vec<Calendar>, 
             }
         }
         let resp: CalendarListResponse = get(agent, &url, token)?;
-        out.extend(
-            resp.items
-                .into_iter()
-                .filter_map(CalendarListEntry::into_model),
-        );
+        out.extend(resp.items.into_iter().filter_map(|c| c.into_model(account)));
         match resp.next_page_token {
             Some(p) => page = Some(p),
             None => break,
@@ -148,7 +160,7 @@ pub fn events(
         url.path_segments_mut()
             .expect("base")
             .push("calendars")
-            .push(&calendar.id)
+            .push(&calendar.remote_id)
             .push("events");
         {
             let mut q = url.query_pairs_mut();
@@ -204,11 +216,13 @@ struct CalendarListEntry {
 }
 
 impl CalendarListEntry {
-    fn into_model(self) -> Option<Calendar> {
+    fn into_model(self, account: &str) -> Option<Calendar> {
         if self.hidden {
             return None;
         }
         Some(Calendar {
+            id: Calendar::key(account, &self.id),
+            account: account.to_string(),
             name: self
                 .summary_override
                 .or(self.summary)
@@ -221,7 +235,7 @@ impl CalendarListEntry {
             primary: self.primary,
             default_reminders: popup_minutes(&self.default_reminders),
             selected_upstream: self.selected || self.primary,
-            id: self.id,
+            remote_id: self.id,
         })
     }
 }
@@ -458,7 +472,9 @@ mod tests {
 
     fn cal() -> Calendar {
         Calendar {
-            id: "me@example.com".into(),
+            id: Calendar::key("me@example.com", "me@example.com"),
+            account: "me@example.com".into(),
+            remote_id: "me@example.com".into(),
             name: "Me".into(),
             color: 0x123456,
             primary: true,
@@ -539,8 +555,15 @@ mod tests {
             ]}"##,
         )
         .unwrap();
-        let cals: Vec<_> = r.items.into_iter().filter_map(|c| c.into_model()).collect();
+        let cals: Vec<_> = r
+            .items
+            .into_iter()
+            .filter_map(|c| c.into_model("me@x"))
+            .collect();
         assert_eq!(cals.len(), 2);
+        assert_eq!(cals[1].id, "me@x/team");
+        assert_eq!(cals[1].remote_id, "team");
+        assert_eq!(cals[1].account, "me@x");
         assert_eq!(cals[0].color, 0x9fe1e7);
         assert_eq!(cals[0].default_reminders, vec![10]);
         assert!(cals[0].selected_upstream);

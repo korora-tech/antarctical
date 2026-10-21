@@ -1,8 +1,8 @@
 //! Secrets live in the desktop keyring (freedesktop Secret Service: GNOME Keyring, KWallet,
-//! KeePassXC…) and nowhere else: the OAuth client id + secret entered in Settings, and the
-//! Google refresh token. Access tokens are only ever held in memory.
+//! KeePassXC…) and nowhere else: the OAuth client id + secret entered in Settings, and one
+//! refresh token per Google account. Access tokens are only ever held in memory.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -11,7 +11,10 @@ use crate::google::oauth::ClientCredentials;
 
 pub const SERVICE: &str = "com.korora.Antarctical";
 const CLIENT_USER: &str = "google-oauth-client";
-const REFRESH_USER: &str = "google-refresh-token";
+/// JSON map of account email → refresh token, in one item: one unlock, one atomic write.
+const TOKENS_USER: &str = "google-refresh-tokens";
+/// The single-account item from before multi-account support; migrated on first start.
+const LEGACY_REFRESH_USER: &str = "google-refresh-token";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SecretError {
@@ -79,7 +82,7 @@ impl Secrets {
     pub fn set_client(&self, client: &ClientCredentials) -> Result<(), SecretError> {
         let previous = self.client().ok().flatten();
         if previous.as_ref().map(|c| &c.client_id) != Some(&client.client_id) {
-            self.store.delete(REFRESH_USER)?;
+            self.clear_tokens()?;
         }
         let raw = serde_json::to_string(&StoredClient {
             client_id: client.client_id.clone(),
@@ -90,20 +93,58 @@ impl Secrets {
     }
 
     pub fn clear_client(&self) -> Result<(), SecretError> {
-        self.store.delete(REFRESH_USER)?;
+        self.clear_tokens()?;
         self.store.delete(CLIENT_USER)
     }
 
-    pub fn refresh_token(&self) -> Result<Option<String>, SecretError> {
-        self.store.get(REFRESH_USER)
+    /// Refresh tokens by account email.
+    pub fn tokens(&self) -> Result<BTreeMap<String, String>, SecretError> {
+        match self.store.get(TOKENS_USER)? {
+            None => Ok(BTreeMap::new()),
+            Some(raw) => {
+                serde_json::from_str(&raw).map_err(|e| SecretError::Corrupt(e.to_string()))
+            }
+        }
     }
 
-    pub fn set_refresh_token(&self, token: &str) -> Result<(), SecretError> {
-        self.store.set(REFRESH_USER, token)
+    fn write_tokens(&self, tokens: &BTreeMap<String, String>) -> Result<(), SecretError> {
+        if tokens.is_empty() {
+            self.store.delete(TOKENS_USER)
+        } else {
+            self.store.set(
+                TOKENS_USER,
+                &serde_json::to_string(tokens).expect("serialize"),
+            )
+        }
     }
 
-    pub fn clear_refresh_token(&self) -> Result<(), SecretError> {
-        self.store.delete(REFRESH_USER)
+    pub fn set_token(&self, account: &str, token: &str) -> Result<(), SecretError> {
+        let mut tokens = self.tokens()?;
+        tokens.insert(account.to_string(), token.to_string());
+        self.write_tokens(&tokens)
+    }
+
+    pub fn remove_token(&self, account: &str) -> Result<(), SecretError> {
+        let mut tokens = self.tokens()?;
+        if tokens.remove(account).is_some() {
+            self.write_tokens(&tokens)?;
+        }
+        Ok(())
+    }
+
+    /// Forgets every account (including a not yet migrated single-account token).
+    pub fn clear_tokens(&self) -> Result<(), SecretError> {
+        self.store.delete(LEGACY_REFRESH_USER)?;
+        self.store.delete(TOKENS_USER)
+    }
+
+    /// A refresh token stored by a single-account build, whose account is not known yet.
+    pub fn legacy_token(&self) -> Result<Option<String>, SecretError> {
+        self.store.get(LEGACY_REFRESH_USER)
+    }
+
+    pub fn delete_legacy_token(&self) -> Result<(), SecretError> {
+        self.store.delete(LEGACY_REFRESH_USER)
     }
 }
 
@@ -129,7 +170,8 @@ fn entry(user: &str) -> Result<keyring_core::Entry, SecretError> {
     ensure_default_store()?;
     let label = match user {
         CLIENT_USER => "Antarctical: Google OAuth client",
-        REFRESH_USER => "Antarctical: Google refresh token",
+        TOKENS_USER => "Antarctical: Google refresh tokens",
+        LEGACY_REFRESH_USER => "Antarctical: Google refresh token",
         _ => "Antarctical",
     };
     keyring_core::Entry::new_with_modifiers(SERVICE, user, &HashMap::from([("label", label)]))
@@ -202,23 +244,51 @@ mod tests {
         let s = Secrets::memory();
         assert_eq!(s.client().unwrap(), None);
         s.set_client(&client("a")).unwrap();
-        s.set_refresh_token("rt").unwrap();
-        // Saving the same client, or rotating its secret, keeps the session.
+        s.set_token("me@x", "rt").unwrap();
+        // Saving the same client, or rotating its secret, keeps the sessions.
         s.set_client(&client("a")).unwrap();
         s.set_client(&ClientCredentials {
             client_id: "a".into(),
             client_secret: "rotated".into(),
         })
         .unwrap();
-        assert_eq!(s.refresh_token().unwrap().as_deref(), Some("rt"));
-        // A different client drops it.
+        assert_eq!(
+            s.tokens().unwrap().get("me@x").map(String::as_str),
+            Some("rt")
+        );
+        // A different client drops every account.
         s.set_client(&client("b")).unwrap();
-        assert_eq!(s.refresh_token().unwrap(), None);
+        assert!(s.tokens().unwrap().is_empty());
         assert_eq!(s.client().unwrap(), Some(client("b")));
-        s.set_refresh_token("rt2").unwrap();
+        s.set_token("me@x", "rt2").unwrap();
         s.clear_client().unwrap();
         assert_eq!(s.client().unwrap(), None);
-        assert_eq!(s.refresh_token().unwrap(), None);
+        assert!(s.tokens().unwrap().is_empty());
+    }
+
+    #[test]
+    fn tokens_per_account() {
+        let s = Secrets::memory();
+        s.set_token("a@x", "1").unwrap();
+        s.set_token("b@x", "2").unwrap();
+        s.set_token("a@x", "3").unwrap();
+        let t = s.tokens().unwrap();
+        assert_eq!(t.len(), 2);
+        assert_eq!(t["a@x"], "3");
+        s.remove_token("a@x").unwrap();
+        assert_eq!(s.tokens().unwrap().keys().collect::<Vec<_>>(), vec!["b@x"]);
+        s.remove_token("b@x").unwrap();
+        assert!(s.tokens().unwrap().is_empty());
+    }
+
+    #[test]
+    fn legacy_token_is_cleared_with_the_accounts() {
+        let store = Arc::new(MemoryStore::default());
+        store.set(LEGACY_REFRESH_USER, "old").unwrap();
+        let s = Secrets::new(store);
+        assert_eq!(s.legacy_token().unwrap().as_deref(), Some("old"));
+        s.clear_tokens().unwrap();
+        assert_eq!(s.legacy_token().unwrap(), None);
     }
 
     #[test]

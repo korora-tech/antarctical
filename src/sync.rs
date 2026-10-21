@@ -1,6 +1,10 @@
 //! The sync worker: one thread that owns credentials, talks to Google and pushes results to
 //! the UI. The UI never blocks on the network or the keyring; it sends [`Command`]s and renders
 //! whatever [`SyncEvent`]s arrive.
+//!
+//! One OAuth client serves any number of Google accounts. Each account has its own refresh
+//! token (in the keyring), access token (in memory) and calendars; a failure in one account
+//! does not stop the others.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -29,10 +33,13 @@ pub enum Command {
         client_id: String,
         client_secret: Option<String>,
     },
+    /// Removes the client and every account.
     ClearClient,
-    SignIn,
+    /// Starts a browser sign-in; the account chosen there is added (or re-authorised).
+    AddAccount,
     CancelSignIn,
-    SignOut,
+    /// Signs one account out: revokes its token and forgets it.
+    RemoveAccount(String),
     Refresh,
     /// The months (first days) the UI is showing. Missing or stale months are fetched.
     Want(Vec<Date>),
@@ -47,14 +54,8 @@ pub enum AuthState {
     Starting,
     /// No OAuth client saved in Settings.
     NeedsClient,
-    SignedOut,
-    /// Waiting for the browser; `url` is shown in case the browser did not open.
-    SigningIn {
-        url: String,
-    },
-    SignedIn {
-        account: Option<String>,
-    },
+    /// A client is saved; see [`SyncEvent::Accounts`] for who is signed in.
+    Ready,
     Demo,
 }
 
@@ -63,6 +64,11 @@ pub enum SyncEvent {
     Auth(AuthState),
     /// The saved client id (never the secret), for Settings.
     Client(Option<String>),
+    /// Signed-in account emails, in display order.
+    Accounts(Vec<String>),
+    /// A browser sign-in is waiting (`Some(url)`, shown in case no browser opened) or not.
+    SigningIn(Option<String>),
+    /// Every calendar of every account (see [`Calendar::account`]).
     Calendars(Vec<Calendar>),
     /// Replaces everything known for `calendar_id` in `month`.
     Month {
@@ -104,9 +110,12 @@ pub fn start_google(secrets: Secrets) -> (SyncHandle, async_channel::Receiver<Sy
     (SyncHandle { tx }, erx)
 }
 
-/// Why a Google call failed: no usable token, or the API said no.
+/// Why a Google call failed.
 enum CallError {
+    /// The account has no usable token (it was just signed out, or the client is rejected).
     Auth(String),
+    /// The account is no longer signed in at all; skip it quietly.
+    Gone,
     Api(ApiError),
 }
 
@@ -114,6 +123,7 @@ impl std::fmt::Display for CallError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CallError::Auth(m) => f.write_str(m),
+            CallError::Gone => f.write_str("Account signed out"),
             CallError::Api(e) => e.fmt(f),
         }
     }
@@ -124,15 +134,20 @@ struct Access {
     expires: Instant,
 }
 
+struct Account {
+    email: String,
+    refresh_token: String,
+    access: Option<Access>,
+    calendars: Vec<Calendar>,
+}
+
 struct Worker {
     secrets: Secrets,
     events: async_channel::Sender<SyncEvent>,
     self_tx: mpsc::Sender<Command>,
     agent: ureq::Agent,
     client: Option<ClientCredentials>,
-    refresh_token: Option<String>,
-    access: Option<Access>,
-    calendars: Vec<Calendar>,
+    accounts: Vec<Account>,
     /// Month → when it was last fetched for all calendars.
     fetched: BTreeMap<Date, Instant>,
     visible: Vec<Date>,
@@ -157,9 +172,7 @@ impl Worker {
             self_tx,
             agent: api::agent(),
             client: None,
-            refresh_token: None,
-            access: None,
-            calendars: vec![],
+            accounts: vec![],
             fetched: BTreeMap::new(),
             visible: vec![],
             last_refresh: None,
@@ -182,6 +195,21 @@ impl Worker {
         }
     }
 
+    fn emit_accounts(&self) {
+        self.emit(SyncEvent::Accounts(
+            self.accounts.iter().map(|a| a.email.clone()).collect(),
+        ));
+    }
+
+    fn emit_calendars(&self) {
+        self.emit(SyncEvent::Calendars(
+            self.accounts
+                .iter()
+                .flat_map(|a| a.calendars.iter().cloned())
+                .collect(),
+        ));
+    }
+
     fn run(mut self, rx: mpsc::Receiver<Command>) {
         self.load_from_keyring();
         loop {
@@ -196,9 +224,7 @@ impl Worker {
                 None => self.tick(),
             }
         }
-        if let Some((_, cancel)) = &self.sign_in {
-            cancel.store(true, Ordering::Relaxed);
-        }
+        self.cancel_sign_in();
     }
 
     fn load_from_keyring(&mut self) {
@@ -224,25 +250,80 @@ impl Worker {
             self.set_auth(AuthState::NeedsClient);
             return;
         }
-        match self.secrets.refresh_token() {
-            Ok(Some(rt)) => {
-                self.refresh_token = Some(rt);
-                self.set_auth(AuthState::SignedIn { account: None });
-                self.refresh_all();
-            }
-            Ok(None) => self.set_auth(AuthState::SignedOut),
+        let tokens = match self.secrets.tokens() {
+            Ok(t) => t,
             Err(e) => {
                 self.keyring_failed = true;
                 self.emit(SyncEvent::Problem(Some(format!(
                     "{e}. Unlock the keyring and press Ctrl+R to retry."
                 ))));
-                self.set_auth(AuthState::SignedOut);
+                self.set_auth(AuthState::Ready);
+                return;
             }
+        };
+        self.accounts = tokens
+            .into_iter()
+            .map(|(email, refresh_token)| Account {
+                email,
+                refresh_token,
+                access: None,
+                calendars: vec![],
+            })
+            .collect();
+        self.migrate_legacy_token();
+        self.emit_accounts();
+        self.set_auth(AuthState::Ready);
+        self.refresh_all();
+    }
+
+    /// A single-account build stored one refresh token without its account. Find out whose
+    /// it is and move it into the per-account map.
+    fn migrate_legacy_token(&mut self) {
+        let (Ok(Some(rt)), Some(client)) = (self.secrets.legacy_token(), self.client.clone())
+        else {
+            return;
+        };
+        let t = match oauth::refresh(&self.agent, &client, &rt) {
+            Ok(t) => t,
+            // Revoked, or issued to another client: unusable.
+            Err(AuthError::InvalidGrant(_) | AuthError::InvalidClient(_)) => {
+                let _ = self.secrets.delete_legacy_token();
+                return;
+            }
+            // Offline or similar: try again next start.
+            Err(e) => {
+                self.emit(SyncEvent::Problem(Some(format!(
+                    "Could not restore the previously signed-in account: {e}"
+                ))));
+                return;
+            }
+        };
+        let email = match api::primary_email(&self.agent, &t.access_token) {
+            Ok(email) => email,
+            Err(e) => {
+                self.emit(SyncEvent::Problem(Some(format!(
+                    "Could not identify the previously signed-in account: {e}"
+                ))));
+                return;
+            }
+        };
+        if self.secrets.set_token(&email, &rt).is_ok() {
+            let _ = self.secrets.delete_legacy_token();
         }
+        self.accounts.retain(|a| a.email != email);
+        self.accounts.push(Account {
+            email,
+            refresh_token: rt,
+            access: Some(Access {
+                token: t.access_token,
+                expires: Instant::now() + Duration::from_secs(t.expires_in),
+            }),
+            calendars: vec![],
+        });
     }
 
     fn signed_in(&self) -> bool {
-        self.refresh_token.is_some()
+        !self.accounts.is_empty()
     }
 
     fn handle(&mut self, cmd: Command) {
@@ -252,36 +333,26 @@ impl Worker {
                 client_secret,
             } => self.save_client(client_id, client_secret),
             Command::ClearClient => {
-                self.sign_out(true);
+                self.remove_all_accounts(true);
                 match self.secrets.clear_client() {
                     Ok(()) => {
                         self.client = None;
                         self.emit(SyncEvent::Client(None));
                         self.emit(SyncEvent::Notice(
-                            "OAuth client removed from the keyring".into(),
+                            "OAuth client and accounts removed from the keyring".into(),
                         ));
                         self.set_auth(AuthState::NeedsClient);
                     }
                     Err(e) => self.emit(SyncEvent::Problem(Some(e.to_string()))),
                 }
             }
-            Command::SignIn => self.begin_sign_in(),
-            Command::CancelSignIn => {
-                if let Some((_, cancel)) = self.sign_in.take() {
-                    cancel.store(true, Ordering::Relaxed);
-                }
-                self.set_auth(if self.signed_in() {
-                    AuthState::SignedIn {
-                        account: self.account(),
-                    }
-                } else {
-                    AuthState::SignedOut
-                });
-            }
+            Command::AddAccount => self.begin_sign_in(),
+            Command::CancelSignIn => self.cancel_sign_in(),
             Command::SignInFinished(seq, result) => self.finish_sign_in(seq, result),
-            Command::SignOut => {
-                self.sign_out(true);
-                self.emit(SyncEvent::Notice("Signed out of Google".into()));
+            Command::RemoveAccount(email) => {
+                if self.remove_account(&email, true) {
+                    self.emit(SyncEvent::Notice(format!("Signed out of {email}")));
+                }
             }
             Command::Refresh => {
                 self.retry_at = None;
@@ -319,14 +390,7 @@ impl Worker {
         }
     }
 
-    fn account(&self) -> Option<String> {
-        self.calendars
-            .iter()
-            .find(|c| c.primary)
-            .map(|c| c.id.clone())
-    }
-
-    // ----- client & sign-in ---------------------------------------------------------------
+    // ----- client & accounts --------------------------------------------------------------
 
     fn save_client(&mut self, client_id: String, client_secret: Option<String>) {
         let client_id = client_id.trim().to_string();
@@ -353,8 +417,7 @@ impl Worker {
             client_id,
             client_secret,
         };
-        let changed = self.client.as_ref() != Some(&client);
-        if !changed {
+        if self.client.as_ref() == Some(&client) {
             self.emit(SyncEvent::Notice("OAuth client unchanged".into()));
             return;
         }
@@ -363,9 +426,9 @@ impl Worker {
             .as_ref()
             .is_some_and(|c| c.client_id != client.client_id)
         {
-            // A refresh token belongs to the client id that issued it; a rotated secret for
-            // the same client keeps the session.
-            self.sign_out(true);
+            // Refresh tokens belong to the client id that issued them; a rotated secret for
+            // the same client keeps every session.
+            self.remove_all_accounts(true);
         }
         match self.secrets.set_client(&client) {
             Ok(()) => {
@@ -375,9 +438,16 @@ impl Worker {
                 self.emit(SyncEvent::Notice(
                     "OAuth client saved to the keyring".into(),
                 ));
-                self.set_auth(AuthState::SignedOut);
+                self.set_auth(AuthState::Ready);
             }
             Err(e) => self.emit(SyncEvent::Problem(Some(e.to_string()))),
+        }
+    }
+
+    fn cancel_sign_in(&mut self) {
+        if let Some((_, cancel)) = self.sign_in.take() {
+            cancel.store(true, Ordering::Relaxed);
+            self.emit(SyncEvent::SigningIn(None));
         }
     }
 
@@ -386,9 +456,7 @@ impl Worker {
             self.set_auth(AuthState::NeedsClient);
             return;
         };
-        if let Some((_, cancel)) = self.sign_in.take() {
-            cancel.store(true, Ordering::Relaxed);
-        }
+        self.cancel_sign_in();
         let loopback = match oauth::Loopback::bind() {
             Ok(l) => l,
             Err(e) => {
@@ -409,7 +477,7 @@ impl Worker {
         let cancel = Arc::new(AtomicBool::new(false));
         self.sign_in = Some((seq, cancel.clone()));
         self.emit(SyncEvent::Problem(None));
-        self.set_auth(AuthState::SigningIn { url: url.clone() });
+        self.emit(SyncEvent::SigningIn(Some(url.clone())));
         if let Err(e) = open::that_detached(&url) {
             eprintln!("antarctical: could not open a browser: {e}");
         }
@@ -446,119 +514,171 @@ impl Worker {
             return;
         }
         self.sign_in = None;
+        self.emit(SyncEvent::SigningIn(None));
         let tokens = match result {
             Ok(t) => t,
             Err(AuthError::Cancelled) => return,
             Err(e) => {
                 self.emit(SyncEvent::Problem(Some(e.to_string())));
-                self.set_auth(AuthState::SignedOut);
                 return;
             }
         };
         let Some(refresh_token) = tokens.refresh_token else {
+            oauth::revoke(&self.agent, &tokens.access_token);
             self.emit(SyncEvent::Problem(Some(
                 "Google did not return a refresh token. Remove Antarctical's access at \
                  myaccount.google.com/permissions and sign in again."
                     .into(),
             )));
-            self.set_auth(AuthState::SignedOut);
             return;
         };
-        if let Err(e) = self.secrets.set_refresh_token(&refresh_token) {
+        let email = match api::primary_email(&self.agent, &tokens.access_token) {
+            Ok(email) => email,
+            Err(e) => {
+                oauth::revoke(&self.agent, &refresh_token);
+                self.emit(SyncEvent::Problem(Some(format!(
+                    "Signed in, but could not read the account's primary calendar: {e}"
+                ))));
+                return;
+            }
+        };
+        if let Err(e) = self.secrets.set_token(&email, &refresh_token) {
             self.emit(SyncEvent::Problem(Some(format!(
-                "{e}. You are signed in for this session only."
+                "{e}. {email} is signed in for this session only."
             ))));
         } else {
             self.emit(SyncEvent::Problem(None));
         }
-        self.refresh_token = Some(refresh_token);
-        self.access = Some(Access {
+        let access = Some(Access {
             token: tokens.access_token,
             expires: Instant::now() + Duration::from_secs(tokens.expires_in),
         });
-        self.set_auth(AuthState::SignedIn { account: None });
+        match self.accounts.iter_mut().find(|a| a.email == email) {
+            // Signing in again with an account we have: the new token replaces the old one.
+            Some(existing) => {
+                let old = std::mem::replace(&mut existing.refresh_token, refresh_token);
+                existing.access = access;
+                if old != existing.refresh_token {
+                    oauth::revoke(&self.agent, &old);
+                }
+                self.emit(SyncEvent::Notice(format!("{email} signed in again")));
+            }
+            None => {
+                self.accounts.push(Account {
+                    email: email.clone(),
+                    refresh_token,
+                    access,
+                    calendars: vec![],
+                });
+                self.emit(SyncEvent::Notice(format!("Added {email}")));
+            }
+        }
+        self.emit_accounts();
+        // Months were fetched for the old set of accounts.
+        self.fetched.clear();
         self.refresh_all();
     }
 
-    /// Forgets the session. `revoke` also tells Google to invalidate the refresh token.
-    fn sign_out(&mut self, revoke: bool) {
-        if let Some((_, cancel)) = self.sign_in.take() {
-            cancel.store(true, Ordering::Relaxed);
-        }
-        if let Some(rt) = self.refresh_token.take()
-            && revoke
-            && !oauth::revoke(&self.agent, &rt)
-        {
-            self.emit(SyncEvent::Notice(
-                "Signed out here, but Google could not be told. Remove access at \
+    /// Forgets one account. `revoke` also tells Google to invalidate its refresh token.
+    /// Returns whether the account existed.
+    fn remove_account(&mut self, email: &str, revoke: bool) -> bool {
+        let Some(i) = self.accounts.iter().position(|a| a.email == email) else {
+            return false;
+        };
+        let account = self.accounts.remove(i);
+        if revoke && !oauth::revoke(&self.agent, &account.refresh_token) {
+            self.emit(SyncEvent::Notice(format!(
+                "Signed out of {email} here, but Google could not be told. Remove access at \
                  myaccount.google.com/permissions."
-                    .into(),
-            ));
+            )));
         }
-        self.access = None;
-        if let Err(e) = self.secrets.clear_refresh_token() {
+        if let Err(e) = self.secrets.remove_token(email) {
             self.emit(SyncEvent::Problem(Some(e.to_string())));
         }
-        self.calendars.clear();
-        self.fetched.clear();
-        self.last_refresh = None;
-        self.retry_at = None;
-        self.emit(SyncEvent::Calendars(vec![]));
-        self.set_auth(if self.client.is_some() {
-            AuthState::SignedOut
-        } else {
-            AuthState::NeedsClient
-        });
+        if self.accounts.is_empty() {
+            self.fetched.clear();
+            self.last_refresh = None;
+            self.retry_at = None;
+        }
+        self.emit_accounts();
+        self.emit_calendars();
+        true
     }
 
-    fn access_token(&mut self) -> Result<String, String> {
-        if let Some(a) = &self.access
+    fn remove_all_accounts(&mut self, revoke: bool) {
+        self.cancel_sign_in();
+        let emails: Vec<String> = self.accounts.iter().map(|a| a.email.clone()).collect();
+        for email in emails {
+            self.remove_account(&email, revoke);
+        }
+        if let Err(e) = self.secrets.clear_tokens() {
+            self.emit(SyncEvent::Problem(Some(e.to_string())));
+        }
+    }
+
+    fn access_token(&mut self, email: &str) -> Result<String, CallError> {
+        let client = self.client.clone().ok_or(CallError::Gone)?;
+        let account = self
+            .accounts
+            .iter()
+            .find(|a| a.email == email)
+            .ok_or(CallError::Gone)?;
+        if let Some(a) = &account.access
             && a.expires > Instant::now() + Duration::from_secs(60)
         {
             return Ok(a.token.clone());
         }
-        let (Some(client), Some(rt)) = (self.client.clone(), self.refresh_token.clone()) else {
-            return Err("Not signed in".into());
-        };
+        let rt = account.refresh_token.clone();
         match oauth::refresh(&self.agent, &client, &rt) {
             Ok(t) => {
+                let account = self
+                    .accounts
+                    .iter_mut()
+                    .find(|a| a.email == email)
+                    .ok_or(CallError::Gone)?;
                 if let Some(new_rt) = t.refresh_token
                     && new_rt != rt
                 {
-                    let _ = self.secrets.set_refresh_token(&new_rt);
-                    self.refresh_token = Some(new_rt);
+                    let _ = self.secrets.set_token(email, &new_rt);
+                    account.refresh_token = new_rt;
                 }
-                self.access = Some(Access {
+                account.access = Some(Access {
                     token: t.access_token.clone(),
                     expires: Instant::now() + Duration::from_secs(t.expires_in),
                 });
                 Ok(t.access_token)
             }
             Err(AuthError::InvalidGrant(_)) => {
-                self.sign_out(false);
-                Err("Your Google sign-in expired or was revoked. Sign in again.".into())
+                self.remove_account(email, false);
+                Err(CallError::Auth(format!(
+                    "The sign-in for {email} expired or was revoked; add it again in Settings."
+                )))
             }
             Err(AuthError::InvalidClient(m)) => {
-                self.sign_out(false);
-                Err(format!(
+                // No account can work with a rejected client.
+                self.remove_all_accounts(false);
+                Err(CallError::Auth(format!(
                     "Google rejected the OAuth client saved in Settings ({m}). \
-                     Check it, then sign in again."
-                ))
+                     Check it, then add your accounts again."
+                )))
             }
-            Err(e) => Err(e.to_string()),
+            Err(e) => Err(CallError::Auth(e.to_string())),
         }
     }
 
-    /// Runs `f` with a valid token, refreshing once if Google says the token is stale.
+    /// Runs `f` with a valid token for `email`, refreshing once if Google says it is stale.
     fn with_token<T>(
         &mut self,
+        email: &str,
         f: impl Fn(&ureq::Agent, &str) -> Result<T, ApiError>,
     ) -> Result<T, CallError> {
-        let token = self.access_token().map_err(CallError::Auth)?;
+        let token = self.access_token(email)?;
         match f(&self.agent, &token) {
             Err(ApiError::Unauthorized) => {
-                self.access = None;
-                let token = self.access_token().map_err(CallError::Auth)?;
+                if let Some(a) = self.accounts.iter_mut().find(|a| a.email == email) {
+                    a.access = None;
+                }
+                let token = self.access_token(email)?;
                 f(&self.agent, &token).map_err(CallError::Api)
             }
             other => other.map_err(CallError::Api),
@@ -574,32 +694,45 @@ impl Worker {
         vec![add_months(m, -1), m, add_months(m, 1)]
     }
 
+    fn emails(&self) -> Vec<String> {
+        self.accounts.iter().map(|a| a.email.clone()).collect()
+    }
+
     fn refresh_all(&mut self) {
         if !self.signed_in() {
             return;
         }
         self.emit(SyncEvent::Busy(true));
-        let result = self.with_token(api::calendar_list);
-        match result {
-            Ok(cals) => {
-                self.calendars = cals.clone();
-                self.emit(SyncEvent::Calendars(cals));
-                self.set_auth(AuthState::SignedIn {
-                    account: self.account(),
-                });
-            }
-            Err(e) => {
-                self.fail(e.to_string());
-                return;
+        let mut problems = vec![];
+        for email in self.emails() {
+            match self.with_token(&email, |agent, token| {
+                api::calendar_list(agent, token, &email)
+            }) {
+                Ok(cals) => {
+                    if let Some(a) = self.accounts.iter_mut().find(|a| a.email == email) {
+                        a.calendars = cals;
+                    }
+                }
+                Err(CallError::Gone) => {}
+                // This account was signed out (expired token); the others carry on.
+                Err(CallError::Auth(m)) if !self.accounts.iter().any(|a| a.email == email) => {
+                    problems.push(m)
+                }
+                Err(e) => {
+                    self.fail(e.to_string());
+                    return;
+                }
             }
         }
+        self.emit_calendars();
         let months: BTreeSet<Date> = Self::core_months()
             .into_iter()
             .chain(self.visible.iter().copied())
             .collect();
         // Everything else becomes stale and is re-fetched when it is next shown.
         self.fetched.retain(|m, _| months.contains(m));
-        if let Some(problems) = self.fetch_months(&months.into_iter().collect::<Vec<_>>()) {
+        if let Some(more) = self.fetch_months(&months.into_iter().collect::<Vec<_>>()) {
+            problems.extend(more);
             self.last_refresh = Some(Instant::now());
             self.emit(SyncEvent::Problem(problem_text(&problems)));
             self.emit(SyncEvent::Synced(Timestamp::now()));
@@ -608,7 +741,7 @@ impl Worker {
     }
 
     fn fetch_missing(&mut self) {
-        if !self.signed_in() || self.calendars.is_empty() {
+        if !self.accounts.iter().any(|a| !a.calendars.is_empty()) {
             return;
         }
         let missing: Vec<Date> = self
@@ -634,8 +767,8 @@ impl Worker {
     }
 
     /// Fetches `months` with one request per calendar per contiguous run of months, and
-    /// splits the result into per-month replacements. Returns the per-calendar problems, or
-    /// `None` when a failure aborted the sync.
+    /// splits the result into per-month replacements. Returns the per-calendar and
+    /// per-account problems, or `None` when a failure aborted the sync.
     fn fetch_months(&mut self, months: &[Date]) -> Option<Vec<String>> {
         let tz = TimeZone::system();
         let mut problems = vec![];
@@ -645,9 +778,15 @@ impl Worker {
             // which can sit up to a day away from the instants Google filters on.
             let from = day_start(add_days(first, -1), &tz).timestamp();
             let to = day_start(add_days(add_months(last, 1), 1), &tz).timestamp();
-            for cal in self.calendars.clone() {
-                let result =
-                    self.with_token(|agent, token| api::events(agent, token, &cal, from, to));
+            let work: Vec<(String, Calendar)> = self
+                .accounts
+                .iter()
+                .flat_map(|a| a.calendars.iter().map(|c| (a.email.clone(), c.clone())))
+                .collect();
+            for (email, cal) in work {
+                let result = self.with_token(&email, |agent, token| {
+                    api::events(agent, token, &cal, from, to)
+                });
                 let events = match result {
                     Ok(evs) => evs,
                     // A calendar-specific refusal: report it and carry on with the others.
@@ -657,7 +796,15 @@ impl Worker {
                         problems.push(format!("{}: {e}", cal.name));
                         continue;
                     }
-                    // Auth, network, rate limit or decode trouble: stop and retry later.
+                    Err(CallError::Gone) => continue,
+                    // This account was just signed out; its calendars are gone from the UI.
+                    Err(CallError::Auth(m)) if !self.accounts.iter().any(|a| a.email == email) => {
+                        if !problems.contains(&m) {
+                            problems.push(m);
+                        }
+                        continue;
+                    }
+                    // Network, rate limit or decode trouble: stop and retry later.
                     Err(e) => {
                         self.fail(e.to_string());
                         return None;

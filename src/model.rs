@@ -6,7 +6,13 @@ use jiff::{Timestamp, ToSpan, Zoned};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Calendar {
+    /// Unique across accounts: [`Calendar::key`] of the account and the Google calendar id.
+    /// Two accounts can subscribe to the same calendar, so the Google id alone is ambiguous.
     pub id: String,
+    /// The Google account (email) this calendar was listed under.
+    pub account: String,
+    /// Google's calendar id, used in API paths.
+    pub remote_id: String,
     pub name: String,
     /// 0xRRGGBB.
     pub color: u32,
@@ -15,6 +21,13 @@ pub struct Calendar {
     pub default_reminders: Vec<i64>,
     /// Google's own "shown in the list" flag; the initial visibility when the user never toggled it.
     pub selected_upstream: bool,
+}
+
+impl Calendar {
+    /// Emails never contain '/', so the key splits unambiguously on its first '/'.
+    pub fn key(account: &str, remote_id: &str) -> String {
+        format!("{account}/{remote_id}")
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -18,6 +18,10 @@ pub struct Store {
     pub auth: AuthState,
     /// Saved OAuth client id (the secret never leaves the worker).
     pub client_id: Option<String>,
+    /// Signed-in Google accounts (emails), in display order.
+    pub accounts: Vec<String>,
+    /// The consent URL while a browser sign-in is pending.
+    pub signing_in: Option<String>,
     pub calendars: Vec<Calendar>,
     chunks: HashMap<(String, Date), Vec<Event>>,
     pub busy: bool,
@@ -34,6 +38,8 @@ impl Store {
             demo,
             auth: AuthState::Starting,
             client_id: None,
+            accounts: vec![],
+            signing_in: None,
             calendars: vec![],
             chunks: HashMap::new(),
             busy: false,
@@ -51,7 +57,8 @@ impl Store {
     pub fn apply(&mut self, ev: SyncEvent) {
         match ev {
             SyncEvent::Auth(auth) => {
-                if matches!(auth, AuthState::SignedOut | AuthState::NeedsClient) {
+                if auth == AuthState::NeedsClient {
+                    self.accounts.clear();
                     self.calendars.clear();
                     self.chunks.clear();
                     self.last_sync = None;
@@ -59,6 +66,13 @@ impl Store {
                 self.auth = auth;
             }
             SyncEvent::Client(id) => self.client_id = id,
+            SyncEvent::Accounts(accounts) => {
+                if accounts.is_empty() {
+                    self.last_sync = None;
+                }
+                self.accounts = accounts;
+            }
+            SyncEvent::SigningIn(url) => self.signing_in = url,
             SyncEvent::Calendars(cals) => {
                 let ids: HashSet<&str> = cals.iter().map(|c| c.id.as_str()).collect();
                 self.chunks.retain(|(cal, _), _| ids.contains(cal.as_str()));
@@ -149,8 +163,28 @@ impl Store {
         self.events_between(date, add_days(date, 1), tz)
     }
 
+    /// At least one account (or demo data) to show.
     pub fn signed_in(&self) -> bool {
-        matches!(self.auth, AuthState::SignedIn { .. } | AuthState::Demo)
+        self.auth == AuthState::Demo || !self.accounts.is_empty()
+    }
+
+    /// Calendars grouped by account, in account order.
+    pub fn calendars_by_account(&self) -> Vec<(&str, Vec<&Calendar>)> {
+        let mut out: Vec<(&str, Vec<&Calendar>)> = vec![];
+        for c in &self.calendars {
+            match out.iter_mut().find(|(a, _)| *a == c.account) {
+                Some((_, cals)) => cals.push(c),
+                None => out.push((c.account.as_str(), vec![c])),
+            }
+        }
+        let order = |a: &str| {
+            self.accounts
+                .iter()
+                .position(|x| x == a)
+                .unwrap_or(usize::MAX)
+        };
+        out.sort_by_key(|(a, _)| order(a));
+        out
     }
 }
 
@@ -166,6 +200,8 @@ mod tests {
         s.apply(SyncEvent::Calendars(vec![
             Calendar {
                 id: "a".into(),
+                account: "me@x".into(),
+                remote_id: "a".into(),
                 name: "A".into(),
                 color: 1,
                 primary: true,
@@ -174,6 +210,8 @@ mod tests {
             },
             Calendar {
                 id: "b".into(),
+                account: "work@x".into(),
+                remote_id: "b".into(),
                 name: "B".into(),
                 color: 2,
                 primary: false,
@@ -229,16 +267,24 @@ mod tests {
     }
 
     #[test]
-    fn sign_out_clears_data() {
+    fn removing_a_calendar_drops_its_events_and_groups_follow_account_order() {
         let mut s = store();
+        s.apply(SyncEvent::Accounts(vec!["work@x".into(), "me@x".into()]));
+        let groups: Vec<&str> = s.calendars_by_account().iter().map(|(a, _)| *a).collect();
+        assert_eq!(groups, vec!["work@x", "me@x"]);
         s.apply(SyncEvent::Month {
-            calendar_id: "a".into(),
+            calendar_id: "b".into(),
             month: date(2026, 10, 1),
             events: vec![],
         });
         assert!(s.has_month(date(2026, 10, 1)));
-        s.apply(SyncEvent::Auth(AuthState::SignedOut));
-        assert!(s.calendars.is_empty());
+        // work@x signs out: the worker sends the remaining calendars.
+        let remaining = vec![s.calendars[0].clone()];
+        s.apply(SyncEvent::Accounts(vec!["me@x".into()]));
+        s.apply(SyncEvent::Calendars(remaining));
         assert!(!s.has_month(date(2026, 10, 1)));
+        assert!(s.signed_in());
+        s.apply(SyncEvent::Accounts(vec![]));
+        assert!(!s.signed_in());
     }
 }

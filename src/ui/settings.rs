@@ -5,7 +5,7 @@
 
 use gpui::{
     App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
-    ScrollHandle, Subscription, Window, div, prelude::*, px, rgb,
+    ScrollHandle, SharedString, Subscription, Window, div, prelude::*, px, rgb,
 };
 
 use super::text_input::{Submit, TextInput};
@@ -101,13 +101,13 @@ impl SettingsView {
 
     fn click(
         &self,
-        cx: &mut Context<Self>,
+        cx: &Context<Self>,
         f: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) -> OnClick {
         Box::new(cx.listener(move |this, _: &ClickEvent, window, cx| f(this, window, cx)))
     }
 
-    fn send(&self, cx: &mut Context<Self>, cmd: fn() -> Command) -> OnClick {
+    fn send(&self, cx: &Context<Self>, cmd: fn() -> Command) -> OnClick {
         Box::new(cx.listener(move |this, _: &ClickEvent, _, cx| this.store.read(cx).send(cmd())))
     }
 
@@ -153,6 +153,8 @@ impl Render for SettingsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let store = self.store.read(cx);
         let auth = store.auth.clone();
+        let accounts = store.accounts.clone();
+        let signing_in = store.signing_in.clone();
         let demo = store.demo;
         let stored_id = store.client_id.clone();
         let reminders = store.prefs.reminders;
@@ -256,49 +258,113 @@ impl Render for SettingsView {
             );
 
         let account_card = {
-            let (status, action): (String, Option<(&'static str, ButtonStyle, OnClick)>) =
-                match &auth {
-                    AuthState::Starting => ("Reading the keyring…".into(), None),
-                    AuthState::NeedsClient => ("Save an OAuth client above first.".into(), None),
-                    AuthState::SignedOut => (
-                        "Not signed in.".into(),
-                        Some((
-                            "Sign in with Google",
-                            ButtonStyle::Primary,
-                            self.send(cx, || Command::SignIn),
-                        )),
-                    ),
-                    AuthState::SigningIn { .. } => (
-                        "Waiting for you to approve access in the browser…".into(),
-                        Some((
-                            "Cancel",
-                            ButtonStyle::Secondary,
-                            self.send(cx, || Command::CancelSignIn),
-                        )),
-                    ),
-                    AuthState::SignedIn { account } => (
-                        format!(
-                            "Signed in{}. Read-only access to your calendars; the refresh token is kept in the keyring.",
-                            account
-                                .as_ref()
-                                .map(|a| format!(" as {a}"))
-                                .unwrap_or_default()
-                        ),
-                        Some((
-                            "Sign out",
+            let intro = match &auth {
+                AuthState::Starting => "Reading the keyring…",
+                AuthState::NeedsClient => "Save an OAuth client above first.",
+                AuthState::Demo => "Demo mode: showing generated accounts.",
+                AuthState::Ready if accounts.is_empty() => {
+                    "No account yet. Each account gets read-only access; its refresh token is kept in the keyring."
+                }
+                AuthState::Ready => {
+                    "Read-only access. Each account's refresh token is kept in the keyring; removing an account revokes it."
+                }
+            };
+            let can_add = auth == AuthState::Ready;
+            let rows = accounts.iter().map(|email| {
+                let target = email.clone();
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(BORDER))
+                    .bg(rgb(PANEL_RAISED))
+                    .px_3()
+                    .py_2()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .min_w(px(0.0))
+                            .child(
+                                div()
+                                    .size(px(7.0))
+                                    .flex_shrink_0()
+                                    .rounded_full()
+                                    .bg(rgb(GREEN)),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(px(12.0))
+                                    .text_color(rgb(TEXT))
+                                    .child(email.clone()),
+                            ),
+                    )
+                    .when(can_add, |d| {
+                        d.child(button(
+                            SharedString::from(format!("remove-{email}")),
+                            "Remove",
                             ButtonStyle::Danger,
-                            self.send(cx, || Command::SignOut),
-                        )),
-                    ),
-                    AuthState::Demo => ("Demo mode: showing generated calendars.".into(), None),
-                };
-            card("Google account")
-                .child(body_text(status))
-                .children(action.map(|(label, style, on_click)| {
+                            Some(self.click(cx, move |this, _, cx| {
+                                this.store
+                                    .read(cx)
+                                    .send(Command::RemoveAccount(target.clone()))
+                            })),
+                        ))
+                    })
+            });
+            let footer = match (&signing_in, can_add) {
+                (Some(url), _) => {
+                    let url = url.clone();
                     div()
                         .flex()
-                        .child(button("account-action", label, style, Some(on_click)))
-                }))
+                        .flex_col()
+                        .gap_2()
+                        .child(body_text(
+                            "Waiting for you to choose an account and approve access in the browser…",
+                        ))
+                        .child(
+                            div()
+                                .flex()
+                                .gap_2()
+                                .child(button(
+                                    "copy-sign-in",
+                                    "Copy sign-in link",
+                                    ButtonStyle::Secondary,
+                                    Some(self.click(cx, move |_, _, cx| {
+                                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                            url.clone(),
+                                        ))
+                                    })),
+                                ))
+                                .child(button(
+                                    "cancel-sign-in",
+                                    "Cancel",
+                                    ButtonStyle::Secondary,
+                                    Some(self.send(cx, || Command::CancelSignIn)),
+                                )),
+                        )
+                }
+                (None, true) => div().flex().child(button(
+                    "add-account",
+                    if accounts.is_empty() {
+                        "Sign in with Google"
+                    } else {
+                        "Add another account"
+                    },
+                    ButtonStyle::Primary,
+                    Some(self.send(cx, || Command::AddAccount)),
+                )),
+                (None, false) => div(),
+            };
+            card("Google accounts")
+                .child(body_text(intro))
+                .child(div().flex().flex_col().gap_2().children(rows))
+                .child(footer)
         };
 
         let prefs_card = card("Preferences")
