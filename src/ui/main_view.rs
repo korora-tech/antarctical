@@ -23,7 +23,7 @@ use super::{
 use crate::config::ViewMode;
 use crate::model::{Event, Response, add_days, add_months, month_grid, months_between, week_start};
 use crate::store::Store;
-use crate::sync::{AuthState, Command};
+use crate::sync::{AuthState, Command, ViewId};
 
 const NOTICE_FOR: Duration = Duration::from_secs(4);
 pub const AGENDA_DAYS: i32 = 30;
@@ -112,6 +112,16 @@ impl MainView {
         }
     }
 
+    pub fn focus_date(&mut self, date: Date, window: &mut Window, cx: &mut Context<Self>) {
+        self.anchor = date;
+        self.selected = None;
+        self.pending_grid_scroll = true;
+        self.agenda_scroll.set_offset(gpui::point(px(0.0), px(0.0)));
+        self.request_range(cx);
+        self.focus_calendar(window, cx);
+        cx.notify();
+    }
+
     // ----- navigation ---------------------------------------------------------------------
 
     /// The half-open date range the current view shows.
@@ -135,7 +145,9 @@ impl MainView {
         let months = months_between(from, to);
         if months != self.wanted {
             self.wanted = months.clone();
-            self.store.read(cx).send(Command::Want(months));
+            self.store
+                .read(cx)
+                .send(Command::Want(ViewId::Main, months));
         }
     }
 
@@ -222,20 +234,20 @@ impl MainView {
     fn header(&self, cx: &Context<Self>) -> Div {
         let in_calendar = self.screen == Screen::Calendar;
         let view_tabs = [
-            ("seg-month", "Month", "M", ViewMode::Month),
-            ("seg-week", "Week", "W", ViewMode::Week),
-            ("seg-day", "Day", "D", ViewMode::Day),
-            ("seg-agenda", "Agenda", "A", ViewMode::Agenda),
+            ("seg-month", "Month", ViewMode::Month),
+            ("seg-week", "Week", ViewMode::Week),
+            ("seg-day", "Day", ViewMode::Day),
+            ("seg-agenda", "Agenda", ViewMode::Agenda),
         ];
         div()
-            .h(px(52.0))
+            .h(px(64.0))
             .w_full()
             .flex_shrink_0()
             .flex()
             .items_center()
             .justify_between()
-            .gap_4()
-            .px(px(18.0))
+            .gap_3()
+            .px(px(22.0))
             .bg(rgb(HEADER))
             .border_b_1()
             .border_color(rgb(BORDER))
@@ -247,35 +259,34 @@ impl MainView {
                     .min_w(px(0.0))
                     .child(
                         div()
-                            .size(px(26.0))
+                            .size(px(32.0))
                             .flex()
                             .flex_shrink_0()
                             .items_center()
                             .justify_center()
-                            .rounded_lg()
+                            .rounded_md()
                             .bg(rgb(ACCENT))
-                            .text_size(px(12.0))
+                            .text_size(px(13.0))
                             .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0x11111a))
+                            .text_color(rgb(0x171323))
                             .child(Zoned::now().day().to_string()),
                     )
                     .child(
                         div()
                             .font_weight(FontWeight::SEMIBOLD)
+                            .text_size(px(14.0))
                             .text_color(rgb(TEXT))
                             .child("antarctical"),
                     )
                     .when(in_calendar, |d| {
-                        d.child(div().w(px(10.0)))
-                            .child(button(
-                                "today",
-                                "Today",
-                                ButtonStyle::Secondary,
-                                Some(self.listener_click(cx, |this, _, cx| {
-                                    this.set_anchor(Zoned::now().date(), cx);
-                                    this.pending_grid_scroll = true;
-                                })),
-                            ))
+                        d.child(div().w(px(1.0)).h(px(26.0)).bg(rgb(BORDER)))
+                            .child(
+                                div()
+                                    .text_size(px(19.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(rgb(TEXT))
+                                    .child(format::view_title(self.view, self.anchor)),
+                            )
                             .child(ghost_button(
                                 "prev",
                                 "‹",
@@ -286,45 +297,64 @@ impl MainView {
                                 "›",
                                 Some(self.listener_click(cx, |this, _, cx| this.step(1, cx))),
                             ))
-                            .child(
-                                div()
-                                    .text_size(px(15.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(rgb(TEXT))
-                                    .truncate()
-                                    .child(format::view_title(self.view, self.anchor)),
-                            )
+                            .child(button(
+                                "today",
+                                "Today",
+                                ButtonStyle::Secondary,
+                                Some(self.listener_click(cx, |this, _, cx| {
+                                    this.set_anchor(Zoned::now().date(), cx);
+                                    this.pending_grid_scroll = true;
+                                })),
+                            ))
                     }),
             )
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap_1()
+                    .gap_2()
                     .when(in_calendar, |d| {
-                        d.children(view_tabs.into_iter().map(|(id, label, key, mode)| {
-                            segment(
-                                id,
-                                label,
-                                key,
-                                self.view == mode,
-                                self.listener_click(cx, move |this, _, cx| this.set_view(mode, cx)),
-                            )
-                        }))
-                        .child(div().w(px(12.0)))
+                        d.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .rounded_lg()
+                                .border_1()
+                                .border_color(rgb(BORDER))
+                                .bg(rgb(BG))
+                                .p(px(3.0))
+                                .children(view_tabs.into_iter().map(|(id, label, mode)| {
+                                    segment(
+                                        id,
+                                        label,
+                                        self.view == mode,
+                                        self.listener_click(cx, move |this, _, cx| {
+                                            this.set_view(mode, cx)
+                                        }),
+                                    )
+                                })),
+                        )
                     })
-                    .child(segment(
-                        "seg-settings",
-                        "Settings",
-                        "Ctrl+,",
-                        !in_calendar,
-                        self.listener_click(cx, |this, window, cx| {
+                    .child(button(
+                        "settings",
+                        if in_calendar {
+                            "Settings"
+                        } else {
+                            "Back to calendar"
+                        },
+                        if in_calendar {
+                            ButtonStyle::Secondary
+                        } else {
+                            ButtonStyle::Primary
+                        },
+                        Some(self.listener_click(cx, |this, window, cx| {
                             if this.screen == Screen::Settings {
                                 this.show_calendar(window, cx)
                             } else {
                                 this.show_settings(window, cx)
                             }
-                        }),
+                        })),
                     )),
             )
     }

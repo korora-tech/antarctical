@@ -49,7 +49,8 @@ fn run(rx: mpsc::Receiver<Command>, tx: async_channel::Sender<SyncEvent>) {
     send_months(&[add_months(m, -1), m, add_months(m, 1)]);
     while let Ok(cmd) = rx.recv() {
         match cmd {
-            Command::Want(months) => send_months(&months),
+            Command::Want(_, months) => send_months(&months),
+            Command::Forget(_) => {}
             Command::Refresh => send_months(&[m]),
             Command::SaveClient { client_id, .. } => {
                 emit(SyncEvent::Client(Some(client_id)));

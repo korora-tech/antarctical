@@ -43,11 +43,19 @@ pub enum Command {
     Refresh,
     /// The user dismissed the banner (including sticky "account dropped" messages).
     DismissProblems,
-    /// The months (first days) the UI is showing. Missing or stale months are fetched.
-    Want(Vec<Date>),
+    /// The months (first days) a UI surface is showing. Missing or stale months are fetched.
+    Want(ViewId, Vec<Date>),
+    /// A UI surface closed; its months no longer need to be kept fresh.
+    Forget(ViewId),
     Shutdown,
     #[doc(hidden)]
     SignInFinished(u64, Result<TokenResponse, AuthError>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ViewId {
+    Main,
+    Tray,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -155,7 +163,7 @@ struct Worker {
     accounts: Vec<Account>,
     /// Month → when it was last fetched for all calendars.
     fetched: BTreeMap<Date, Instant>,
-    visible: Vec<Date>,
+    visible: BTreeMap<ViewId, Vec<Date>>,
     last_refresh: Option<Instant>,
     retry_at: Option<Instant>,
     sign_in: Option<(u64, Arc<AtomicBool>)>,
@@ -182,7 +190,7 @@ impl Worker {
             client: None,
             accounts: vec![],
             fetched: BTreeMap::new(),
-            visible: vec![],
+            visible: BTreeMap::new(),
             last_refresh: None,
             retry_at: None,
             sign_in: None,
@@ -426,9 +434,12 @@ impl Worker {
                 self.sticky.clear();
                 self.emit(SyncEvent::Problem(None));
             }
-            Command::Want(months) => {
-                self.visible = months;
+            Command::Want(view, months) => {
+                self.visible.insert(view, months);
                 self.fetch_missing();
+            }
+            Command::Forget(view) => {
+                self.visible.remove(&view);
             }
             Command::Shutdown => {}
         }
@@ -793,7 +804,7 @@ impl Worker {
         self.emit_calendars();
         let months: BTreeSet<Date> = Self::core_months()
             .into_iter()
-            .chain(self.visible.iter().copied())
+            .chain(self.visible.values().flatten().copied())
             .collect();
         // Everything else becomes stale and is re-fetched when it is next shown.
         self.fetched.retain(|m, _| months.contains(m));
@@ -812,7 +823,8 @@ impl Worker {
         }
         let missing: Vec<Date> = self
             .visible
-            .iter()
+            .values()
+            .flatten()
             .copied()
             .filter(|m| {
                 self.fetched

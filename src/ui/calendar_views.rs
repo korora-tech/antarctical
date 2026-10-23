@@ -112,7 +112,7 @@ impl MainView {
         let events = store.events_between(grid[0], add_days(grid[41], 1), &tz);
         // Rows that fit in a cell: the window height minus chrome, over six weeks.
         let viewport = f32::from(window.viewport_size().height);
-        let cell_h = ((viewport - 52.0 - 28.0) / 6.0).max(60.0);
+        let cell_h = ((viewport - 64.0 - 28.0) / 6.0).max(60.0);
         let rows = (((cell_h - 26.0) / MONTH_ROW_H).floor() as usize).max(1);
 
         let weekday_header = div()

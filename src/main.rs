@@ -93,14 +93,22 @@ fn main() {
                 }
             };
             let has_tray = tray.is_some();
+            let tray_window: ui::TrayWindow = Rc::new(RefCell::new(None));
 
             // Tray menu → app.
             {
                 let store = store.clone();
+                let tray_window = tray_window.clone();
                 cx.spawn(async move |cx| {
                     while let Ok(action) = tray_rx.recv().await {
                         cx.update(|cx| match action {
-                            TrayAction::Open => ui::show_main_window(&store, cx),
+                            TrayAction::TogglePopover { x, y } => {
+                                ui::toggle_tray_window(&store, &tray_window, Some((x, y)), cx)
+                            }
+                            TrayAction::OpenMain => {
+                                ui::close_tray_window(&store, &tray_window, cx);
+                                ui::show_main_window(&store, cx);
+                            }
                             TrayAction::Refresh => store.read(cx).send(Command::Refresh),
                             TrayAction::Quit => cx.quit(),
                         });

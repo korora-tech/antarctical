@@ -195,6 +195,7 @@ dependencies = [
  "unicode-segmentation",
  "ureq",
  "url",
+ "uuid",
  "zbus-secret-service-keyring-store",
 ]
 

@@ -58,6 +58,7 @@ Preferences that are not secret (visible calendars, view, reminders, 24-hour clo
 | `ctrl-q` | Quit |
 
 - **Details:** click an event to see its time, place, guests and description. From there you can join its video call or open it in Google Calendar.
+- **Tray:** click the date icon for a compact month and agenda window. Choose a day there and open the full calendar at that date; use the tray menu to open the full calendar directly.
 - **Navigation:** click a day in the month grid or in the sidebar's mini calendar to open it.
 - **Calendar visibility:** checkboxes in the sidebar hide or show calendars. Until you toggle one, each calendar follows Google's own "show in list" setting.
 - **Declined events:** shown struck through.
@@ -97,7 +98,7 @@ nix develop -c cargo fmt
 | `src/tray.rs` | StatusNotifierItem tray and its date icon |
 | `src/reminders.rs` | When reminders are due |
 | `src/layout.rs` | Side-by-side placement of overlapping events |
-| `src/ui/` | GPUI views: main window, calendar views, settings, text input |
+| `src/ui/` | GPUI views: main window, calendar views, tray agenda, settings, text input |
 
 ## Not yet
 

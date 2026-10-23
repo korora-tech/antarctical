@@ -89,7 +89,6 @@ pub fn ghost_button(
 pub fn segment(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
-    hint: &'static str,
     active: bool,
     on_click: OnClick,
 ) -> Stateful<Div> {
@@ -97,18 +96,19 @@ pub fn segment(
         .id(id)
         .flex()
         .items_center()
-        .gap(px(6.0))
+        .justify_center()
         .rounded_md()
-        .px_3()
-        .py(px(4.0))
+        .px(px(11.0))
+        .py(px(6.0))
         .bg(rgb(if active { SELECTED } else { HEADER }))
-        .border_1()
-        .border_color(rgb(if active { SELECTED_BORDER } else { HEADER }))
-        .hover(|s| s.bg(rgb(HOVER)).cursor_pointer())
+        .hover(|s| {
+            s.bg(rgb(if active { SELECTED } else { HOVER }))
+                .cursor_pointer()
+        })
         .on_click(on_click)
         .child(
             div()
-                .text_size(px(12.0))
+                .text_size(px(11.0))
                 .font_weight(if active {
                     FontWeight::SEMIBOLD
                 } else {
@@ -116,12 +116,6 @@ pub fn segment(
                 })
                 .text_color(rgb(if active { TEXT } else { SECONDARY }))
                 .child(label.into()),
-        )
-        .child(
-            div()
-                .text_size(px(9.0))
-                .text_color(rgb(if active { ACCENT_TEXT } else { 0x6f7784 }))
-                .child(hint),
         )
 }
 

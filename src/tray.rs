@@ -7,7 +7,8 @@ use ksni::{MenuItem, ToolTip};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrayAction {
-    Open,
+    TogglePopover { x: i32, y: i32 },
+    OpenMain,
     Refresh,
     Quit,
 }
@@ -65,8 +66,8 @@ impl ksni::Tray for AntarcticalTray {
         }
     }
 
-    fn activate(&mut self, _x: i32, _y: i32) {
-        self.send(TrayAction::Open);
+    fn activate(&mut self, x: i32, y: i32) {
+        self.send(TrayAction::TogglePopover { x, y });
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
@@ -93,7 +94,7 @@ impl ksni::Tray for AntarcticalTray {
                 StandardItem {
                     // Underscores are mnemonic markers in SNI menus.
                     label: format!("{time}  {}", title.replace('_', "__")),
-                    activate: Box::new(|t: &mut Self| t.send(TrayAction::Open)),
+                    activate: Box::new(|t: &mut Self| t.send(TrayAction::OpenMain)),
                     ..Default::default()
                 }
                 .into(),
@@ -102,9 +103,9 @@ impl ksni::Tray for AntarcticalTray {
         items.extend([
             MenuItem::Separator,
             StandardItem {
-                label: "Open Antarctical".into(),
+                label: "Open full calendar".into(),
                 icon_name: "x-office-calendar".into(),
-                activate: Box::new(|t: &mut Self| t.send(TrayAction::Open)),
+                activate: Box::new(|t: &mut Self| t.send(TrayAction::OpenMain)),
                 ..Default::default()
             }
             .into(),
