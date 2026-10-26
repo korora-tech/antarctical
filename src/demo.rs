@@ -10,14 +10,13 @@ use jiff::{Timestamp, ToSpan, Zoned};
 use crate::model::{Attendee, Calendar, Event, Response, When, add_days, add_months};
 use crate::sync::{AuthState, Command, SyncEvent, SyncHandle};
 
-pub fn start() -> (SyncHandle, async_channel::Receiver<SyncEvent>) {
+pub fn start() -> std::io::Result<(SyncHandle, async_channel::Receiver<SyncEvent>)> {
     let (tx, rx) = mpsc::channel();
     let (etx, erx) = async_channel::unbounded();
     std::thread::Builder::new()
         .name("antarctical-demo".into())
-        .spawn(move || run(rx, etx))
-        .expect("spawn demo worker");
-    (SyncHandle::from_sender(tx), erx)
+        .spawn(move || run(rx, etx))?;
+    Ok((SyncHandle::from_sender(tx), erx))
 }
 
 fn run(rx: mpsc::Receiver<Command>, tx: async_channel::Sender<SyncEvent>) {

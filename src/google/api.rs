@@ -107,7 +107,8 @@ pub fn primary_email(agent: &ureq::Agent, token: &str) -> Result<String, ApiErro
     struct Primary {
         id: String,
     }
-    let url = url::Url::parse(&format!("{BASE}/calendars/primary?fields=id")).expect("url");
+    let url = url::Url::parse(&format!("{BASE}/calendars/primary?fields=id"))
+        .expect("BASE and the primary-calendar path form a valid Google API URL");
     get::<Primary>(agent, &url, token).map(|p| p.id)
 }
 
@@ -120,7 +121,8 @@ pub fn calendar_list(
     let mut out = vec![];
     let mut page: Option<String> = None;
     loop {
-        let mut url = url::Url::parse(&format!("{BASE}/users/me/calendarList")).expect("url");
+        let mut url = url::Url::parse(&format!("{BASE}/users/me/calendarList"))
+            .expect("BASE and the calendar-list path form a valid Google API URL");
         {
             let mut q = url.query_pairs_mut();
             q.append_pair("maxResults", "250")
@@ -156,9 +158,10 @@ pub fn events(
     let mut out = vec![];
     let mut page: Option<String> = None;
     loop {
-        let mut url = url::Url::parse(BASE).expect("url");
+        let mut url =
+            url::Url::parse(BASE).expect("BASE is a valid static Google Calendar API URL");
         url.path_segments_mut()
-            .expect("base")
+            .expect("BASE has no query or fragment, so its path segments are mutable")
             .push("calendars")
             .push(&calendar.remote_id)
             .push("events");

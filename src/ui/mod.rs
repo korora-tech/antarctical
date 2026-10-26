@@ -66,7 +66,9 @@ pub fn show_main_window(store: &Entity<Store>, cx: &mut App) {
         .into_iter()
         .find_map(|window| window.downcast::<main_view::MainView>())
     {
-        let _ = window.update(cx, |_, window, _| window.activate_window());
+        if let Err(error) = window.update(cx, |_, window, _| window.activate_window()) {
+            eprintln!("antarctical: could not activate the calendar window: {error}");
+        }
         cx.activate(true);
         return;
     }
@@ -80,10 +82,12 @@ pub fn show_main_window_at(store: &Entity<Store>, date: Date, cx: &mut App) {
         .into_iter()
         .find_map(|window| window.downcast::<main_view::MainView>())
     {
-        let _ = window.update(cx, |view, window, cx| {
+        if let Err(error) = window.update(cx, |view, window, cx| {
             view.focus_date(date, window, cx);
             window.activate_window();
-        });
+        }) {
+            eprintln!("antarctical: could not focus the calendar window on {date}: {error}");
+        }
         cx.activate(true);
         return;
     }
@@ -112,9 +116,13 @@ pub fn show_main_window_at(store: &Entity<Store>, date: Date, cx: &mut App) {
                 }
             })
             .detach();
-            let _ = window.update(cx, |view, window, cx| {
+            if let Err(error) = window.update(cx, |view, window, cx| {
                 view.focus_date(date, window, cx);
-            });
+            }) {
+                eprintln!(
+                    "antarctical: could not focus the new calendar window on {date}: {error}"
+                );
+            }
             cx.activate(true);
         }
         Err(e) => eprintln!("antarctical: could not open a window: {e}"),
