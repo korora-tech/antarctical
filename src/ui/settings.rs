@@ -4,13 +4,16 @@
 //! The client secret is write-only from the UI's point of view: it goes to the sync worker,
 //! which stores it in the keyring; the field is cleared afterwards and never pre-filled.
 
+use gpui::prelude::*;
 use gpui::{
     App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
-    ScrollHandle, SharedString, Subscription, Window, div, prelude::*, px, rgb,
+    ScrollHandle, SharedString, Subscription, Window, div, px, rgb,
 };
 
 use super::text_input::{Submit, TextInput};
-use super::theme::*;
+use super::theme::{
+    ACCENT, ACCENT_TEXT, BORDER, DISABLED, GREEN, MUTED, PANEL_RAISED, SELECTED, TEXT,
+};
 use super::widgets::{ButtonStyle, OnClick, body_text, button, caption, card, checkbox_row};
 use crate::store::{Mode, Store};
 use crate::sync::{AuthState, Command};

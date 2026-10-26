@@ -1,8 +1,9 @@
 //! The month grid, the week/day time grid and the agenda list.
 
+use gpui::prelude::*;
 use gpui::{
-    AnyElement, ClickEvent, Context, Div, FontWeight, SharedString, Stateful, Window, div,
-    prelude::*, px, relative, rgb,
+    AnyElement, ClickEvent, Context, Div, FontWeight, SharedString, Stateful, Window, div, px,
+    relative, rgb,
 };
 use jiff::Zoned;
 use jiff::civil::Date;
@@ -10,9 +11,13 @@ use jiff::tz::TimeZone;
 
 use super::format;
 use super::main_view::{AGENDA_DAYS, MainView};
-use super::theme::*;
+use super::theme::{
+    ACCENT, ACCENT_TEXT, BG, BORDER, CAPTION, DISABLED, GRID_LINE, HOUR_PX, HOVER, MUTED, NOW_LINE,
+    OUTSIDE, PANEL, SECONDARY, SELECTED, SELECTED_BORDER, TEXT, tint,
+};
 use crate::layout;
-use crate::model::{Event, add_days, day_start, month_grid};
+use crate::model;
+use crate::model::Event;
 use crate::store::Store;
 
 const MONTH_ROW_H: f32 = 19.0;
@@ -107,9 +112,9 @@ impl MainView {
     ) -> AnyElement {
         let tz = TimeZone::system();
         let today = Zoned::now().date();
-        let grid = month_grid(self.anchor);
+        let grid = model::month_grid(self.anchor);
         let month = self.anchor.month();
-        let events = store.events_between(grid[0], add_days(grid[41], 1), &tz);
+        let events = store.events_between(grid[0], model::add_days(grid[41], 1), &tz);
         // Rows that fit in a cell: the window height minus chrome, over six weeks.
         let viewport = f32::from(window.viewport_size().height);
         let cell_h = ((viewport - 64.0 - 28.0) / 6.0).max(60.0);
@@ -239,8 +244,8 @@ impl MainView {
         let now = Zoned::now();
         let today = now.date();
         let clock = store.prefs.clock_24h;
-        let dates: Vec<Date> = (0..days).map(|i| add_days(first, i)).collect();
-        let events = store.events_between(first, add_days(first, days), &tz);
+        let dates: Vec<Date> = (0..days).map(|i| model::add_days(first, i)).collect();
+        let events = store.events_between(first, model::add_days(first, days), &tz);
 
         if self.pending_grid_scroll {
             self.pending_grid_scroll = false;
@@ -384,8 +389,8 @@ impl MainView {
 
         let mut columns = div().flex_1().min_w(px(0.0)).flex().h_full();
         for &d in &dates {
-            let day_from = day_start(d, &tz).timestamp();
-            let day_to = day_start(add_days(d, 1), &tz).timestamp();
+            let day_from = model::day_start(d, &tz).timestamp();
+            let day_to = model::day_start(model::add_days(d, 1), &tz).timestamp();
             let timed: Vec<&Event> = events
                 .iter()
                 .copied()
@@ -553,7 +558,7 @@ impl MainView {
         let tz = TimeZone::system();
         let today = Zoned::now().date();
         let clock = store.prefs.clock_24h;
-        let to = add_days(self.anchor, AGENDA_DAYS);
+        let to = model::add_days(self.anchor, AGENDA_DAYS);
         let events = store.events_between(self.anchor, to, &tz);
         let mut list = div().flex().flex_col().gap_4().p_6().max_w(px(860.0));
         let mut any = false;
@@ -568,7 +573,7 @@ impl MainView {
                 any = true;
                 let label = if d == today {
                     format!("Today · {}", d.strftime("%A %-d %B"))
-                } else if d == add_days(today, 1) {
+                } else if d == model::add_days(today, 1) {
                     format!("Tomorrow · {}", d.strftime("%A %-d %B"))
                 } else {
                     d.strftime("%A %-d %B").to_string()
@@ -669,7 +674,7 @@ impl MainView {
                         })),
                 );
             }
-            d = add_days(d, 1);
+            d = model::add_days(d, 1);
         }
         if !any {
             list = list.child(

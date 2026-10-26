@@ -9,7 +9,8 @@ use jiff::civil::Date;
 use jiff::tz::TimeZone;
 
 use crate::config::Prefs;
-use crate::model::{Calendar, Event, add_days, months_between};
+use crate::model;
+use crate::model::{Calendar, Event};
 use crate::sync::{AuthState, Command, SyncEvent, SyncHandle};
 
 /// The account data source represented by a [`Store`].
@@ -155,7 +156,7 @@ impl Store {
     /// sorted all-day first, then by start. Declined events are left out unless
     /// [`Prefs::show_declined`] is on.
     pub fn events_between(&self, from: Date, to: Date, tz: &TimeZone) -> Vec<&Event> {
-        let months = months_between(from, to);
+        let months = model::months_between(from, to);
         let mut seen = HashSet::new();
         let mut out = vec![];
         for cal in self.calendars.iter().filter(|c| self.is_visible(c)) {
@@ -181,7 +182,7 @@ impl Store {
                             out.push(e);
                             break;
                         }
-                        d = add_days(d, 1);
+                        d = model::add_days(d, 1);
                     }
                 }
             }
@@ -244,7 +245,7 @@ impl Store {
     }
 
     pub fn events_on(&self, date: Date, tz: &TimeZone) -> Vec<&Event> {
-        self.events_between(date, add_days(date, 1), tz)
+        self.events_between(date, model::add_days(date, 1), tz)
     }
 
     /// At least one account (or demo data) to show.

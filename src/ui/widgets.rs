@@ -1,11 +1,14 @@
 //! Stateless building blocks. Disabled controls never get an `on_click`.
 
+use gpui::prelude::*;
 use gpui::{
-    App, ClickEvent, Div, ElementId, FontWeight, SharedString, Stateful, Window, div, prelude::*,
-    px, rgb,
+    App, ClickEvent, Div, ElementId, FontWeight, SharedString, Stateful, Window, div, px, rgb,
 };
 
-use super::theme::*;
+use super::theme::{
+    ACCENT, BORDER, CAPTION, DISABLED, HEADER, HOVER, MUTED, PANEL, PANEL_RAISED, RED, SECONDARY,
+    SELECTED, TEXT,
+};
 
 pub type OnClick = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 

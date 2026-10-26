@@ -3,16 +3,17 @@
 
 use std::ops::Range;
 
+use gpui::prelude::*;
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine,
     SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill,
-    point, prelude::*, px, relative, rgb, rgba, size,
+    point, px, relative, rgb, rgba, size,
 };
-use unicode_segmentation::*;
+use unicode_segmentation::UnicodeSegmentation;
 
-use super::theme::*;
+use super::theme::{ACCENT, BG, DISABLED, TEXT};
 
 actions!(
     text_input,

@@ -2,9 +2,10 @@
 
 use std::time::Duration;
 
+use gpui::prelude::*;
 use gpui::{
     AnyElement, ClickEvent, Context, Div, Entity, FocusHandle, Focusable, FontWeight, ScrollHandle,
-    SharedString, Subscription, Task, Window, div, prelude::*, px, rgb,
+    SharedString, Subscription, Task, Window, div, px, rgb,
 };
 use jiff::Zoned;
 use jiff::civil::Date;
@@ -12,7 +13,10 @@ use jiff::tz::TimeZone;
 
 use super::format;
 use super::settings::{SettingsEvent, SettingsView};
-use super::theme::*;
+use super::theme::{
+    ACCENT, AMBER, BG, BORDER, CAPTION, DETAIL_W, DISABLED, GREEN, HEADER, HOVER, MUTED, PANEL,
+    PANEL_RAISED, RED, SECONDARY, SELECTED, SELECTED_BORDER, SIDEBAR, SIDEBAR_W, TEXT,
+};
 use super::widgets::{
     ButtonStyle, OnClick, body_text, button, caption, card, checkbox_row, ghost_button, segment,
 };
@@ -22,7 +26,8 @@ use super::{
 };
 use crate::branding;
 use crate::config::ViewMode;
-use crate::model::{Event, Response, add_days, add_months, month_grid, months_between, week_start};
+use crate::model;
+use crate::model::{Event, Response};
 use crate::store::Store;
 use crate::sync::{AuthState, Command, ViewId};
 
@@ -124,21 +129,21 @@ impl MainView {
     pub(super) fn visible_range(&self) -> (Date, Date) {
         match self.view {
             ViewMode::Month => {
-                let grid = month_grid(self.anchor);
-                (grid[0], add_days(grid[41], 1))
+                let grid = model::month_grid(self.anchor);
+                (grid[0], model::add_days(grid[41], 1))
             }
             ViewMode::Week => {
-                let s = week_start(self.anchor);
-                (s, add_days(s, 7))
+                let s = model::week_start(self.anchor);
+                (s, model::add_days(s, 7))
             }
-            ViewMode::Day => (self.anchor, add_days(self.anchor, 1)),
-            ViewMode::Agenda => (self.anchor, add_days(self.anchor, AGENDA_DAYS)),
+            ViewMode::Day => (self.anchor, model::add_days(self.anchor, 1)),
+            ViewMode::Agenda => (self.anchor, model::add_days(self.anchor, AGENDA_DAYS)),
         }
     }
 
     fn request_range(&mut self, cx: &mut Context<Self>) {
         let (from, to) = self.visible_range();
-        let months = months_between(from, to);
+        let months = model::months_between(from, to);
         if months != self.wanted {
             self.wanted = months.clone();
             self.store
@@ -168,10 +173,10 @@ impl MainView {
 
     fn step(&mut self, dir: i32, cx: &mut Context<Self>) {
         let anchor = match self.view {
-            ViewMode::Month => add_months(self.anchor.first_of_month(), dir),
-            ViewMode::Week => add_days(self.anchor, 7 * dir),
-            ViewMode::Day => add_days(self.anchor, dir),
-            ViewMode::Agenda => add_days(self.anchor, AGENDA_DAYS * dir),
+            ViewMode::Month => model::add_months(self.anchor.first_of_month(), dir),
+            ViewMode::Week => model::add_days(self.anchor, 7 * dir),
+            ViewMode::Day => model::add_days(self.anchor, dir),
+            ViewMode::Agenda => model::add_days(self.anchor, AGENDA_DAYS * dir),
         };
         self.set_anchor(anchor, cx);
     }
@@ -382,7 +387,7 @@ impl MainView {
     fn sidebar(&self, store: &Store, cx: &Context<Self>) -> Div {
         let today = Zoned::now().date();
         let month = self.anchor.first_of_month();
-        let mini = month_grid(month);
+        let mini = model::month_grid(month);
         let weekdays = ["M", "T", "W", "T", "F", "S", "S"];
         let (range_from, range_to) = self.visible_range();
         let mut grid = div()
@@ -511,14 +516,14 @@ impl MainView {
                                 "mini-prev",
                                 "‹",
                                 Some(self.listener_click(cx, move |this, _, cx| {
-                                    this.set_anchor(add_months(month, -1), cx)
+                                    this.set_anchor(model::add_months(month, -1), cx)
                                 })),
                             ))
                             .child(ghost_button(
                                 "mini-next",
                                 "›",
                                 Some(self.listener_click(cx, move |this, _, cx| {
-                                    this.set_anchor(add_months(month, 1), cx)
+                                    this.set_anchor(model::add_months(month, 1), cx)
                                 })),
                             )),
                     ),
@@ -662,7 +667,7 @@ impl MainView {
         let tz = TimeZone::system();
         let (from, to) = self.visible_range();
         let event = store
-            .events_between(add_days(from, -31), add_days(to, 31), &tz)
+            .events_between(model::add_days(from, -31), model::add_days(to, 31), &tz)
             .into_iter()
             .find(|e| e.calendar_id == *cal_id && e.id == *ev_id)?;
         let color = store.color_of(event);
@@ -895,7 +900,9 @@ impl Render for MainView {
                 None => {
                     let content = match self.view {
                         ViewMode::Month => self.month_view(store, window, cx),
-                        ViewMode::Week => self.time_grid(store, week_start(self.anchor), 7, cx),
+                        ViewMode::Week => {
+                            self.time_grid(store, model::week_start(self.anchor), 7, cx)
+                        }
                         ViewMode::Day => self.time_grid(store, self.anchor, 1, cx),
                         ViewMode::Agenda => self.agenda_view(store, cx),
                     };
