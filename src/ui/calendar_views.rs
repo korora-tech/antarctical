@@ -399,12 +399,16 @@ impl MainView {
             let spans: Vec<(i32, i32)> = timed
                 .iter()
                 .map(|e| {
-                    let (s, en) = e.instants(&tz);
-                    let start = if s <= day_from { 0 } else { minute_of(s) };
-                    let end = if en >= day_to {
+                    let span = e.instants(&tz);
+                    let start = if span.start <= day_from {
+                        0
+                    } else {
+                        minute_of(span.start)
+                    };
+                    let end = if span.end >= day_to {
                         DAY_MINUTES
                     } else {
-                        minute_of(en)
+                        minute_of(span.end)
                     };
                     // Short events stay clickable (20 min tall), without running off the day.
                     let end = end.max(start + 20).min(DAY_MINUTES);

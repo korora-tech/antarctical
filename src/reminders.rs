@@ -30,22 +30,22 @@ pub fn due<'a>(
         if e.declined() {
             continue;
         }
-        let (start, end) = e.instants(tz);
+        let span = e.instants(tz);
         for &minutes in &e.reminders {
-            let fire_at = start - SignedDuration::from_mins(minutes);
+            let fire_at = span.start - SignedDuration::from_mins(minutes);
             if fire_at > now || now.duration_since(fire_at) > STALE_AFTER {
                 continue;
             }
-            if now.duration_since(start) > STALE_AFTER {
+            if now.duration_since(span.start) > STALE_AFTER {
                 continue;
             }
-            let key = format!("{}/{}/{}/{}", e.calendar_id, e.id, start, minutes);
+            let key = format!("{}/{}/{}/{}", e.calendar_id, e.id, span.start, minutes);
             if !fired.insert(key) {
                 continue;
             }
             out.push(Due {
                 title: e.title.clone(),
-                body: body(e, now, start, end, tz),
+                body: body(e, now, span.start, span.end, tz),
                 meet_link: e.meet_link.clone(),
             });
         }

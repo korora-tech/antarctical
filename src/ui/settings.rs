@@ -12,7 +12,7 @@ use gpui::{
 use super::text_input::{Submit, TextInput};
 use super::theme::*;
 use super::widgets::{ButtonStyle, OnClick, body_text, button, caption, card, checkbox_row};
-use crate::store::Store;
+use crate::store::{Mode, Store};
 use crate::sync::{AuthState, Command};
 
 const CREDENTIALS_URL: &str = "https://console.cloud.google.com/apis/credentials";
@@ -156,7 +156,7 @@ impl Render for SettingsView {
         let auth = store.auth.clone();
         let accounts = store.accounts.clone();
         let signing_in = store.signing_in.clone();
-        let demo = store.demo;
+        let demo = store.mode == Mode::Demo;
         let stored_id = store.client_id.clone();
         let reminders = store.prefs.reminders;
         let clock_24h = store.prefs.clock_24h;
