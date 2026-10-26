@@ -23,7 +23,7 @@ pub struct Store {
     /// The consent URL while a browser sign-in is pending.
     pub signing_in: Option<String>,
     pub calendars: Vec<Calendar>,
-    chunks: HashMap<(String, Date), Vec<Event>>,
+    chunks: HashMap<String, HashMap<Date, Vec<Event>>>,
     pub busy: bool,
     pub last_sync: Option<Timestamp>,
     pub problem: Option<String>,
@@ -75,7 +75,7 @@ impl Store {
             SyncEvent::SigningIn(url) => self.signing_in = url,
             SyncEvent::Calendars(cals) => {
                 let ids: HashSet<&str> = cals.iter().map(|c| c.id.as_str()).collect();
-                self.chunks.retain(|(cal, _), _| ids.contains(cal.as_str()));
+                self.chunks.retain(|cal, _| ids.contains(cal.as_str()));
                 self.migrate_visibility(&cals);
                 self.calendars = cals;
             }
@@ -84,7 +84,10 @@ impl Store {
                 month,
                 events,
             } => {
-                self.chunks.insert((calendar_id, month), events);
+                self.chunks
+                    .entry(calendar_id)
+                    .or_default()
+                    .insert(month, events);
             }
             SyncEvent::Busy(b) => self.busy = b,
             SyncEvent::Synced(t) => self.last_sync = Some(t),
@@ -141,19 +144,25 @@ impl Store {
 
     #[cfg(test)]
     pub fn has_month(&self, month: Date) -> bool {
-        self.chunks.keys().any(|(_, m)| *m == month)
+        self.chunks
+            .values()
+            .any(|months| months.contains_key(&month))
     }
 
     /// Events on visible calendars overlapping `[from, to)`, de-duplicated (an event spanning
     /// months is in several chunks; a calendar shared with two accounts lists it twice) and
     /// sorted all-day first, then by start.
-    pub fn events_between(&self, from: Date, to: Date, tz: &TimeZone) -> Vec<Event> {
+    pub fn events_between(&self, from: Date, to: Date, tz: &TimeZone) -> Vec<&Event> {
         let months = months_between(from, to);
         let mut seen = HashSet::new();
         let mut out = vec![];
         for cal in self.calendars.iter().filter(|c| self.is_visible(c)) {
             for m in &months {
-                let Some(events) = self.chunks.get(&(cal.id.clone(), *m)) else {
+                let Some(events) = self
+                    .chunks
+                    .get(cal.id.as_str())
+                    .and_then(|months| months.get(m))
+                else {
                     continue;
                 };
                 for e in events {
@@ -163,7 +172,7 @@ impl Store {
                     let mut d = from;
                     while d < to {
                         if e.occurs_on(d, tz) {
-                            out.push(e.clone());
+                            out.push(e);
                             break;
                         }
                         d = add_days(d, 1);
@@ -180,7 +189,7 @@ impl Store {
         out
     }
 
-    pub fn events_on(&self, date: Date, tz: &TimeZone) -> Vec<Event> {
+    pub fn events_on(&self, date: Date, tz: &TimeZone) -> Vec<&Event> {
         self.events_between(date, add_days(date, 1), tz)
     }
 
@@ -290,6 +299,26 @@ mod tests {
         assert_eq!(evs.len(), 1);
         assert_eq!(evs[0].id, "trip");
         assert_eq!(s.events_on(date(2026, 10, 3), &tz).len(), 0);
+    }
+
+    #[test]
+    fn events_are_borrowed_from_the_store() {
+        let mut s = store();
+        s.apply(SyncEvent::Month {
+            calendar_id: "a".into(),
+            month: date(2026, 10, 1),
+            events: vec![all_day("a", "trip", date(2026, 10, 5), date(2026, 10, 6))],
+        });
+        let stored = s
+            .chunks
+            .values()
+            .flat_map(|months| months.values())
+            .flatten()
+            .next()
+            .unwrap();
+        let returned = s.events_on(date(2026, 10, 5), &TimeZone::UTC);
+
+        assert!(std::ptr::eq(stored, returned[0]));
     }
 
     #[test]

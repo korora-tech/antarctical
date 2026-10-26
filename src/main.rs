@@ -172,7 +172,7 @@ fn start_minute_tasks(store: Entity<Store>, tray: Option<Rc<TrayPush>>, cx: &mut
                         &tz,
                     );
                     let due =
-                        reminders::due(&events, Timestamp::now(), &tz, &mut fired.borrow_mut());
+                        reminders::due(events, Timestamp::now(), &tz, &mut fired.borrow_mut());
                     for d in due {
                         // notify-rust blocks on D-Bus; keep it off the UI thread.
                         cx.background_spawn(async move {
@@ -229,7 +229,7 @@ fn tray_content(store: &Store) -> TrayContent {
     let now = Zoned::now();
     let today = now.date();
     let clock = store.prefs.clock_24h;
-    let upcoming: Vec<model::Event> = if store.signed_in() {
+    let upcoming: Vec<&model::Event> = if store.signed_in() {
         store
             .events_on(today, &tz)
             .into_iter()

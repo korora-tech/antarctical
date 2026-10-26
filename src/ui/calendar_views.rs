@@ -137,8 +137,11 @@ impl MainView {
         for week in grid.chunks(7) {
             let mut row = div().flex_1().min_h(px(0.0)).flex();
             for &date in week {
-                let day_events: Vec<&Event> =
-                    events.iter().filter(|e| e.occurs_on(date, &tz)).collect();
+                let day_events: Vec<&Event> = events
+                    .iter()
+                    .copied()
+                    .filter(|e| e.occurs_on(date, &tz))
+                    .collect();
                 let overflow = day_events.len().saturating_sub(rows);
                 let shown = if overflow > 0 {
                     rows.saturating_sub(1)
@@ -303,6 +306,7 @@ impl MainView {
             .map(|&d| {
                 events
                     .iter()
+                    .copied()
                     .filter(|e| e.is_all_day() && e.occurs_on(d, &tz))
                     .collect()
             })
@@ -384,6 +388,7 @@ impl MainView {
             let day_to = day_start(add_days(d, 1), &tz).timestamp();
             let timed: Vec<&Event> = events
                 .iter()
+                .copied()
                 .filter(|e| !e.is_all_day() && e.occurs_on(d, &tz))
                 .collect();
             // Minutes on the wall clock, so a 23- or 25-hour DST day still maps to 24 rows.
@@ -550,7 +555,11 @@ impl MainView {
         let mut any = false;
         let mut d = self.anchor;
         while d < to {
-            let day: Vec<&Event> = events.iter().filter(|e| e.occurs_on(d, &tz)).collect();
+            let day: Vec<&Event> = events
+                .iter()
+                .copied()
+                .filter(|e| e.occurs_on(d, &tz))
+                .collect();
             if !day.is_empty() {
                 any = true;
                 let label = if d == today {
