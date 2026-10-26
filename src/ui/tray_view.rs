@@ -271,17 +271,15 @@ impl TrayPopoverView {
                     .child("Nothing planned"),
             );
         } else {
-            section = section.children(events.iter().map(|event| {
-                let event = (*event).clone();
-                let color = store.color_of(&event);
-                let time = format::event_time_on(&event, date, tz, store.prefs.clock_24h);
+            section = section.children(events.iter().copied().map(|event| {
+                let color = store.color_of(event);
+                let time = format::event_time_on(event, date, tz, store.prefs.clock_24h);
                 let location = event.location.clone();
                 let declined = event.declined();
+                let event_id = format!("tray-event-{}-{}", event.calendar_id, event.id);
+                let title = event.title.clone();
                 div()
-                    .id(SharedString::from(format!(
-                        "tray-event-{}-{}",
-                        event.calendar_id, event.id
-                    )))
+                    .id(SharedString::from(event_id))
                     .w_full()
                     .flex()
                     .items_start()
@@ -328,7 +326,7 @@ impl TrayPopoverView {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(rgb(if declined { MUTED } else { TEXT }))
                                     .when(declined, |d| d.line_through())
-                                    .child(event.title.clone()),
+                                    .child(title),
                             )
                             .when_some(location, |d, location| {
                                 d.child(

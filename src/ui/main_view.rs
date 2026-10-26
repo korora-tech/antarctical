@@ -690,7 +690,7 @@ impl MainView {
             .events_between(add_days(from, -31), add_days(to, 31), &tz)
             .into_iter()
             .find(|e| e.calendar_id == *cal_id && e.id == *ev_id)?;
-        let color = store.color_of(&event);
+        let color = store.color_of(event);
         let cal_name = store
             .calendar(&event.calendar_id)
             .map(|c| {
@@ -722,7 +722,7 @@ impl MainView {
             .flex()
             .flex_col()
             .gap_4()
-            .child(row("WHEN", format::event_when_long(&event, &tz, clock)))
+            .child(row("WHEN", format::event_when_long(event, &tz, clock)))
             .child(row("CALENDAR", cal_name));
         if let Some(loc) = &event.location {
             body = body.child(row("WHERE", loc.clone()));
