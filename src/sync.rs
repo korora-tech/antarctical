@@ -112,15 +112,16 @@ impl SyncHandle {
     }
 }
 
-pub fn start_google(secrets: Secrets) -> (SyncHandle, async_channel::Receiver<SyncEvent>) {
+pub fn start_google(
+    secrets: Secrets,
+) -> std::io::Result<(SyncHandle, async_channel::Receiver<SyncEvent>)> {
     let (tx, rx) = mpsc::channel();
     let (etx, erx) = async_channel::unbounded();
     let self_tx = tx.clone();
     std::thread::Builder::new()
         .name("antarctical-sync".into())
-        .spawn(move || Worker::new(secrets, etx, self_tx).run(rx))
-        .expect("spawn sync worker");
-    (SyncHandle { tx }, erx)
+        .spawn(move || Worker::new(secrets, etx, self_tx).run(rx))?;
+    Ok((SyncHandle { tx }, erx))
 }
 
 /// Why a Google call failed.
@@ -559,7 +560,7 @@ impl Worker {
         }
         let tx = self.self_tx.clone();
         let agent = self.agent.clone();
-        std::thread::Builder::new()
+        let result = std::thread::Builder::new()
             .name("antarctical-sign-in".into())
             .spawn(move || {
                 let result = loopback
@@ -574,8 +575,14 @@ impl Worker {
                         )
                     });
                 let _ = tx.send(Command::SignInFinished(seq, result));
-            })
-            .expect("spawn sign-in thread");
+            });
+        if let Err(error) = result {
+            self.sign_in = None;
+            self.emit(SyncEvent::SigningIn(None));
+            self.emit(SyncEvent::Problem(Some(format!(
+                "Could not start the sign-in worker: {error}"
+            ))));
+        }
     }
 
     fn finish_sign_in(&mut self, seq: u64, result: Result<TokenResponse, AuthError>) {
@@ -932,7 +939,7 @@ fn contiguous_runs(months: &[Date]) -> Vec<Vec<Date>> {
     let mut runs: Vec<Vec<Date>> = vec![];
     for m in sorted {
         match runs.last_mut() {
-            Some(run) if add_months(*run.last().expect("non-empty"), 1) == m => run.push(m),
+            Some(run) if run.last().is_some_and(|last| add_months(*last, 1) == m) => run.push(m),
             _ => runs.push(vec![m]),
         }
     }

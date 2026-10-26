@@ -56,10 +56,18 @@ fn main() {
 
     let mut prefs = config::Prefs::load();
     prefs.ephemeral = demo;
-    let (sync, events) = if demo {
+    let worker = if demo {
         demo::start()
     } else {
         sync::start_google(secrets::Secrets::keyring())
+    };
+    let (sync, events) = match worker {
+        Ok(worker) => worker,
+        Err(error) => {
+            let kind = if demo { "demo" } else { "Google sync" };
+            eprintln!("antarctical: could not start the {kind} worker: {error}");
+            std::process::exit(1);
+        }
     };
 
     // Explicit: closing the last window must not quit while the tray keeps the app alive;

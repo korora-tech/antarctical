@@ -606,9 +606,13 @@ impl Render for TrayPopoverView {
 pub fn toggle(store: &Entity<Store>, handle: &TrayWindow, click: Option<(i32, i32)>, cx: &mut App) {
     let existing = handle.borrow_mut().take();
     if let Some(existing) = existing {
-        let closed = existing
-            .update(cx, |_, window, _| window.remove_window())
-            .is_ok();
+        let closed = match existing.update(cx, |_, window, _| window.remove_window()) {
+            Ok(()) => true,
+            Err(error) => {
+                eprintln!("antarctical: could not close the existing tray calendar: {error}");
+                false
+            }
+        };
         store.read(cx).send(Command::Forget(ViewId::Tray));
         if closed {
             return;
@@ -621,7 +625,9 @@ pub fn toggle(store: &Entity<Store>, handle: &TrayWindow, click: Option<(i32, i3
 pub fn close(store: &Entity<Store>, handle: &TrayWindow, cx: &mut App) {
     let existing = handle.borrow_mut().take();
     if let Some(existing) = existing {
-        let _ = existing.update(cx, |_, window, _| window.remove_window());
+        if let Err(error) = existing.update(cx, |_, window, _| window.remove_window()) {
+            eprintln!("antarctical: could not close the tray calendar: {error}");
+        }
         store.read(cx).send(Command::Forget(ViewId::Tray));
     }
 }
@@ -740,7 +746,10 @@ fn open_on_display(
                 }
             })
             .detach();
-            let _ = window.update(cx, |view, window, cx| window.focus(&view.focus, cx));
+            if let Err(error) = window.update(cx, |view, window, cx| window.focus(&view.focus, cx))
+            {
+                eprintln!("antarctical: could not focus the tray calendar: {error}");
+            }
             cx.activate(true);
         }
         Err(e) => eprintln!("antarctical: could not open tray calendar: {e}"),

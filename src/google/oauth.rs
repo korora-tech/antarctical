@@ -72,7 +72,8 @@ pub struct Pkce {
 
 pub fn random_token(bytes: usize) -> String {
     let mut buf = vec![0u8; bytes];
-    getrandom::fill(&mut buf).expect("OS random source");
+    getrandom::fill(&mut buf)
+        .expect("the OS must provide cryptographic randomness for OAuth state and PKCE");
     URL_SAFE_NO_PAD.encode(buf)
 }
 
@@ -87,7 +88,8 @@ pub fn new_pkce() -> Pkce {
 }
 
 pub fn authorize_url(client_id: &str, redirect_uri: &str, challenge: &str, state: &str) -> String {
-    let mut url = url::Url::parse(AUTH_URL).expect("static URL");
+    let mut url = url::Url::parse(AUTH_URL)
+        .expect("AUTH_URL is the fixed Google OAuth authorization endpoint");
     url.query_pairs_mut()
         .append_pair("client_id", client_id)
         .append_pair("redirect_uri", redirect_uri)

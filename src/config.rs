@@ -72,7 +72,11 @@ impl Prefs {
         let result = (|| -> std::io::Result<()> {
             std::fs::create_dir_all(&dir)?;
             let tmp = dir.join("settings.json.tmp");
-            std::fs::write(&tmp, serde_json::to_vec_pretty(self).expect("serialize"))?;
+            std::fs::write(
+                &tmp,
+                serde_json::to_vec_pretty(self)
+                    .expect("Prefs contains only JSON-serializable settings fields"),
+            )?;
             std::fs::rename(&tmp, dir.join("settings.json"))
         })();
         if let Err(e) = result {

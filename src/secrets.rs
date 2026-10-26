@@ -88,7 +88,7 @@ impl Secrets {
             client_id: client.client_id.clone(),
             client_secret: client.client_secret.clone(),
         })
-        .expect("serialize");
+        .expect("StoredClient contains only JSON-serializable strings");
         self.store.set(CLIENT_USER, &raw)
     }
 
@@ -113,7 +113,8 @@ impl Secrets {
         } else {
             self.store.set(
                 TOKENS_USER,
-                &serde_json::to_string(tokens).expect("serialize"),
+                &serde_json::to_string(tokens)
+                    .expect("refresh-token maps contain only JSON-serializable strings"),
             )
         }
     }
@@ -156,7 +157,9 @@ pub struct KeyringStore;
 /// (or gets unlocked) is picked up on the next attempt.
 fn ensure_default_store() -> Result<(), SecretError> {
     static READY: Mutex<bool> = Mutex::new(false);
-    let mut ready = READY.lock().unwrap();
+    let mut ready = READY
+        .lock()
+        .map_err(|_| SecretError::Unavailable("keyring initialization lock was poisoned".into()))?;
     if !*ready {
         let store = zbus_secret_service_keyring_store::Store::new()
             .map_err(|e| SecretError::Unavailable(e.to_string()))?;
