@@ -1,3 +1,5 @@
+//! Starts the GPUI application, sync worker, and optional system-tray integration.
+
 mod branding;
 mod config;
 mod dankcal;

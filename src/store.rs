@@ -22,9 +22,13 @@ pub enum Mode {
     Demo,
 }
 
+/// Shared UI state assembled from sync-worker events.
 pub struct Store {
+    /// Handle used to send commands to the background sync worker.
     pub sync: SyncHandle,
+    /// The data source shown by this store.
     pub mode: Mode,
+    /// Most recent authentication state reported by the worker.
     pub auth: AuthState,
     /// Saved OAuth client id (the secret never leaves the worker).
     pub client_id: Option<String>,
@@ -32,16 +36,25 @@ pub struct Store {
     pub accounts: Vec<String>,
     /// The consent URL while a browser sign-in is pending.
     pub signing_in: Option<String>,
+    /// Calendars currently available to the UI.
     pub calendars: Vec<Calendar>,
     chunks: HashMap<String, HashMap<Date, Vec<Event>>>,
+    /// Whether a sync operation is in progress.
     pub busy: bool,
+    /// Time of the most recent successful sync, if any.
     pub last_sync: Option<Timestamp>,
+    /// Current sync or authentication problem shown in the UI.
     pub problem: Option<String>,
+    /// Transient notice and the instant at which it should expire.
     pub notice: Option<(String, Instant)>,
+    /// User preferences applied to the current UI state.
     pub prefs: Prefs,
 }
 
 impl Store {
+    /// Creates shared UI state that will be populated from events emitted by `sync`.
+    ///
+    /// `mode` selects Google or local demo content; `prefs` supplies initial settings.
     pub fn new(sync: SyncHandle, mode: Mode, prefs: Prefs) -> Self {
         Self {
             sync,
@@ -60,10 +73,12 @@ impl Store {
         }
     }
 
+    /// Sends a command to the background sync worker.
     pub fn send(&self, cmd: Command) {
         self.sync.send(cmd);
     }
 
+    /// Applies one worker update, replacing any state represented by that update.
     pub fn apply(&mut self, ev: SyncEvent) {
         match ev {
             SyncEvent::Auth(auth) => self.auth = auth,
@@ -117,10 +132,12 @@ impl Store {
         }
     }
 
+    /// Finds a calendar by its account-qualified id.
     pub fn calendar(&self, id: &str) -> Option<&Calendar> {
         self.calendars.iter().find(|c| c.id == id)
     }
 
+    /// Returns the saved visibility override, or Google's initial setting if none exists.
     pub fn is_visible(&self, cal: &Calendar) -> bool {
         self.prefs
             .calendar_visibility
@@ -129,6 +146,7 @@ impl Store {
             .unwrap_or(cal.selected_upstream)
     }
 
+    /// Toggles and persists visibility for the calendar with `id`; unknown ids are ignored.
     pub fn toggle_calendar(&mut self, id: &str) {
         let Some(cal) = self.calendar(id) else { return };
         let visible = !self.is_visible(cal);
@@ -138,6 +156,7 @@ impl Store {
         self.prefs.save();
     }
 
+    /// Resolves an event override, then its calendar color, then the UI's default color.
     pub fn color_of(&self, e: &Event) -> u32 {
         e.color
             .or_else(|| self.calendar(&e.calendar_id).map(|c| c.color))
@@ -145,6 +164,7 @@ impl Store {
     }
 
     #[cfg(test)]
+    /// Reports whether an event chunk for `month` is loaded.
     pub fn has_month(&self, month: Date) -> bool {
         self.chunks
             .values()
@@ -244,6 +264,7 @@ impl Store {
         out
     }
 
+    /// Returns visible events occurring on `date` in `tz`.
     pub fn events_on(&self, date: Date, tz: &TimeZone) -> Vec<&Event> {
         self.events_between(date, model::add_days(date, 1), tz)
     }

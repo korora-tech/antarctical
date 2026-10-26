@@ -7,10 +7,13 @@ use jiff::{Timestamp, ToSpan, Zoned};
 /// A half-open interval represented by its start and exclusive end instants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TimeSpan {
+    /// Inclusive start instant.
     pub start: Timestamp,
+    /// Exclusive end instant.
     pub end: Timestamp,
 }
 
+/// A calendar the application can display, identified separately per Google account.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Calendar {
     /// Unique across accounts: [`Calendar::key`] of the account and the Google calendar id.
@@ -20,13 +23,15 @@ pub struct Calendar {
     pub account: String,
     /// Google's calendar id, used in API paths.
     pub remote_id: String,
+    /// Display name supplied by Google.
     pub name: String,
     /// 0xRRGGBB.
     pub color: u32,
+    /// Whether this is the account's primary calendar.
     pub primary: bool,
     /// Popup reminder offsets (minutes before start) for events with `useDefault`.
     pub default_reminders: Vec<i64>,
-    /// Google's own "shown in the list" flag; the initial visibility when the user never toggled it.
+    /// Google's "shown in the list" flag, used until the user changes visibility.
     pub selected_upstream: bool,
 }
 
@@ -37,53 +42,81 @@ impl Calendar {
     }
 }
 
+/// An event's civil-date or absolute-time interval.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum When {
-    /// `end` is exclusive, as in iCalendar and the Google API.
+    /// A whole-date range; `end` is exclusive, as in iCalendar and the Google API.
     AllDay {
+        /// First included local calendar date.
         start: Date,
+        /// First excluded local calendar date.
         end: Date,
     },
+    /// An interval represented by absolute timestamps.
     Timed {
+        /// Inclusive start instant.
         start: Timestamp,
+        /// Exclusive end instant.
         end: Timestamp,
     },
 }
 
+/// RSVP state reported for an attendee.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Response {
+    /// The attendee accepted the invitation.
     Accepted,
+    /// The attendee marked the invitation tentative.
     Tentative,
+    /// The attendee declined the invitation.
     Declined,
+    /// The attendee has not responded.
     NeedsAction,
 }
 
+/// A person listed on an event invitation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Attendee {
+    /// Display name, when supplied by Google.
     pub name: String,
+    /// Email address used to identify the attendee.
     pub email: String,
+    /// Most recent response reported by Google.
     pub response: Response,
+    /// Whether Google identifies this attendee as the organizer.
     pub organizer: bool,
+    /// Whether this attendee is the signed-in user.
     pub is_self: bool,
 }
 
+/// Event data shared by the Google and demo sources.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Event {
+    /// Google event identifier, unique within its calendar.
     pub id: String,
+    /// Account-qualified identifier of the containing calendar.
     pub calendar_id: String,
+    /// Event title (Google's summary field).
     pub title: String,
+    /// All-day date range or timed instant range.
     pub when: When,
     /// Event colour override (0xRRGGBB); `None` uses the calendar colour.
     pub color: Option<u32>,
+    /// Event location, if provided.
     pub location: Option<String>,
     /// Plain text (HTML from Google is flattened on import).
     pub description: Option<String>,
+    /// Link to open this event in Google Calendar.
     pub html_link: Option<String>,
+    /// Video-conference link, when Google provides one.
     pub meet_link: Option<String>,
+    /// Organizer name or email, when provided.
     pub organizer: Option<String>,
+    /// People invited to the event.
     pub attendees: Vec<Attendee>,
     /// Popup reminder offsets in minutes, already resolved against the calendar defaults.
     pub reminders: Vec<i64>,
+    /// Whether Google marks the event itself as tentative.
     pub tentative: bool,
 }
 
@@ -96,15 +129,19 @@ impl Event {
             .map(|a| a.response)
     }
 
+    /// Whether the signed-in user declined this invitation.
     pub fn declined(&self) -> bool {
         self.self_response() == Some(Response::Declined)
     }
 
+    /// Whether this event uses an all-day date range.
     pub fn is_all_day(&self) -> bool {
         matches!(self.when, When::AllDay { .. })
     }
 
-    /// Start and (exclusive) end as instants. All-day events start and end at local midnight.
+    /// Returns the start and exclusive end as instants in `tz`.
+    ///
+    /// All-day dates are converted to local midnight; zero-length timed events keep equal bounds.
     pub fn instants(&self, tz: &TimeZone) -> TimeSpan {
         match self.when {
             When::Timed { start, end } => TimeSpan {
@@ -131,10 +168,12 @@ impl Event {
         }
     }
 
+    /// Start instant converted to the requested time zone.
     pub fn start_zoned(&self, tz: &TimeZone) -> Zoned {
         self.instants(tz).start.to_zoned(tz.clone())
     }
 
+    /// Exclusive end instant converted to the requested time zone.
     pub fn end_zoned(&self, tz: &TimeZone) -> Zoned {
         self.instants(tz).end.to_zoned(tz.clone())
     }
@@ -146,14 +185,17 @@ pub fn day_start(date: Date, tz: &TimeZone) -> Zoned {
         .unwrap_or_else(|_| Timestamp::UNIX_EPOCH.to_zoned(tz.clone()))
 }
 
+/// Returns the first civil date of the month containing `date`.
 pub fn first_of_month(date: Date) -> Date {
     date.first_of_month()
 }
 
+/// Shifts `date` by calendar months, returning it unchanged if the addition overflows.
 pub fn add_months(date: Date, months: i32) -> Date {
     date.checked_add(months.months()).unwrap_or(date)
 }
 
+/// Shifts `date` by calendar days, returning it unchanged if the addition overflows.
 pub fn add_days(date: Date, days: i32) -> Date {
     date.checked_add(days.days()).unwrap_or(date)
 }
@@ -164,13 +206,15 @@ pub fn week_start(date: Date) -> Date {
     add_days(date, -(offset as i32))
 }
 
-/// The 42 days shown in a month grid (6 weeks starting on the Monday on or before the 1st).
+/// Returns the 42 dates in a month grid, starting Monday on or before the first of the month.
 pub fn month_grid(month: Date) -> Vec<Date> {
     let first = week_start(first_of_month(month));
     (0..42).map(|i| add_days(first, i)).collect()
 }
 
-/// Months (as their first day) touched by the half-open date range `[from, to)`.
+/// Returns first-of-month dates touched by the half-open range `[from, to)`.
+///
+/// If the range is empty, returns the month containing `from`.
 pub fn months_between(from: Date, to: Date) -> Vec<Date> {
     let mut out = vec![];
     let mut m = first_of_month(from);
@@ -189,7 +233,7 @@ pub fn months_between(from: Date, to: Date) -> Vec<Date> {
     out
 }
 
-/// The Google event colour palette (`colorId` 1–11), fixed by the API.
+/// Maps Google's event `colorId` values 1–11 to RGB colors; unknown IDs return `None`.
 pub fn google_event_color(color_id: &str) -> Option<u32> {
     Some(match color_id {
         "1" => 0x7986cb,
@@ -207,6 +251,7 @@ pub fn google_event_color(color_id: &str) -> Option<u32> {
     })
 }
 
+/// Parses a six-digit `#RRGGBB` string into its numeric RGB value.
 pub fn parse_hex_color(s: &str) -> Option<u32> {
     let hex = s.strip_prefix('#')?;
     (hex.len() == 6).then(|| u32::from_str_radix(hex, 16).ok())?

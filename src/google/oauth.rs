@@ -282,7 +282,8 @@ fn page(message: &str) -> String {
         .replace('>', "&gt;");
     format!(
         "<!doctype html><meta charset=utf-8><title>Antarctical</title>\
-         <body style=\"font:16px system-ui;background:#0d0f14;color:#f2f3f6;display:grid;place-items:center;height:90vh\">\
+         <body style=\"font:16px system-ui;background:#0d0f14;color:#f2f3f6;\
+         display:grid;place-items:center;height:90vh\">\
          <p>{escaped}</p></body>"
     )
 }
@@ -290,7 +291,8 @@ fn page(message: &str) -> String {
 fn respond(stream: &mut TcpStream, status: &str, body: &str) {
     let _ = write!(
         stream,
-        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n{body}",
+        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\n\
+         Content-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n{body}",
         body.len()
     );
     let _ = stream.flush();

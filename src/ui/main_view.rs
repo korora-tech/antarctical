@@ -33,6 +33,20 @@ use crate::sync::{AuthState, Command, ViewId};
 
 const NOTICE_FOR: Duration = Duration::from_secs(4);
 pub const AGENDA_DAYS: i32 = 30;
+const KEYRING_READ_ERROR: &str = concat!(
+    "Antarctical could not read your Google credentials from the system keyring. ",
+    "Unlock it (your desktop may have shown a prompt), then retry.",
+);
+const KEYRING_STARTING_INFO: &str = concat!(
+    "Antarctical keeps your Google credentials in the system keyring. ",
+    "Your desktop may ask you to unlock it.",
+);
+const SIGN_IN_INFO: &str = concat!(
+    "Your browser will open Google's consent page. Google will ask you to allow access to your ",
+    "calendars. You can add more accounts later in Settings.",
+);
+const SIGN_IN_BROWSER_INFO: &str =
+    "Approve access on Google's page. If no browser opened, copy the link and open it yourself.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -624,27 +638,37 @@ impl MainView {
             AuthState::Demo => return None,
             AuthState::Ready if store.signed_in() => return None,
             AuthState::Locked => card("Unlock your keyring")
-                .child(body_text("Antarctical could not read your Google credentials from the system keyring. Unlock it (your desktop may have shown a prompt), then retry."))
+                .child(body_text(KEYRING_READ_ERROR))
                 .child(div().flex().child(button(
                     "retry-keyring",
                     "Retry",
                     ButtonStyle::Primary,
-                    Some(self.listener_click(cx, |this, _, cx| this.store.read(cx).send(Command::Refresh))),
+                    Some(self.listener_click(cx, |this, _, cx| {
+                        this.store.read(cx).send(Command::Refresh)
+                    })),
                 ))),
-            AuthState::Starting => card("Opening your keyring…")
-                .child(body_text("Antarctical keeps your Google credentials in the system keyring. Your desktop may ask you to unlock it.")),
+            AuthState::Starting => {
+                card("Opening your keyring…").child(body_text(KEYRING_STARTING_INFO))
+            }
             AuthState::Ready => match store.signing_in.clone() {
                 None => card("Sign in to Google")
-                    .child(body_text("Your browser will open Google's consent page. Google will ask you to allow access to your calendars. You can add more accounts later in Settings."))
+                    .child(body_text(SIGN_IN_INFO))
                     .child(div().flex().child(button(
                         "sign-in",
                         "Sign in with Google",
                         ButtonStyle::Primary,
-                        Some(self.listener_click(cx, |this, _, cx| this.store.read(cx).send(Command::AddAccount))),
+                        Some(self.listener_click(cx, |this, _, cx| {
+                            this.store.read(cx).send(Command::AddAccount)
+                        })),
                     ))),
                 Some(url) => card("Finish signing in in your browser")
-                    .child(body_text("Approve access on Google's page. If no browser opened, copy the link and open it yourself."))
-                    .child(sign_in_actions(url, |this: &mut Self, cx| this.store.read(cx).send(Command::CancelSignIn), self, cx)),
+                    .child(body_text(SIGN_IN_BROWSER_INFO))
+                    .child(sign_in_actions(
+                        url,
+                        |this: &mut Self, cx| this.store.read(cx).send(Command::CancelSignIn),
+                        self,
+                        cx,
+                    )),
             },
         };
         Some(

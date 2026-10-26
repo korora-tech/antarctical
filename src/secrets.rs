@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::google::oauth::ClientCredentials;
 
+/// Secret Service name used for all Antarctical keyring items.
 pub const SERVICE: &str = "korora.tech.Antarctical";
 /// The service name items were stored under before; each one moves to [`SERVICE`] when first read.
 const LEGACY_SERVICE: &str = "com.korora.Antarctical";
@@ -18,10 +19,12 @@ const TOKENS_USER: &str = "google-refresh-tokens";
 /// The single-account item from before multi-account support; migrated on first start.
 const LEGACY_REFRESH_USER: &str = "google-refresh-token";
 
+/// Failure to read or update a stored credential.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SecretError {
     /// No Secret Service on the session bus, or it refused access (locked, denied).
     Unavailable(String),
+    /// A keyring value exists but cannot be decoded.
     Corrupt(String),
 }
 
@@ -34,9 +37,13 @@ impl std::fmt::Display for SecretError {
     }
 }
 
+/// Backend for storing credentials, allowing tests to use an isolated implementation.
 pub trait SecretStore: Send + Sync {
+    /// Reads a value, returning `None` when no item exists for `user`.
     fn get(&self, user: &str) -> Result<Option<String>, SecretError>;
+    /// Stores or replaces the value associated with `user`.
     fn set(&self, user: &str, value: &str) -> Result<(), SecretError>;
+    /// Removes the item associated with `user`; succeeds if the item is already absent.
     fn delete(&self, user: &str) -> Result<(), SecretError>;
 }
 
@@ -53,19 +60,27 @@ pub struct Secrets {
 }
 
 impl Secrets {
+    /// Creates a typed credential interface over `store`.
     pub fn new(store: Arc<dyn SecretStore>) -> Self {
         Self { store }
     }
 
+    /// Creates an interface backed by the desktop Secret Service keyring.
+    ///
+    /// The keyring connection is opened lazily when a credential is accessed.
     pub fn keyring() -> Self {
         Self::new(Arc::new(KeyringStore))
     }
 
     #[cfg(test)]
+    /// Creates an isolated in-memory backend for unit tests.
     pub fn memory() -> Self {
         Self::new(Arc::new(MemoryStore::default()))
     }
 
+    /// Loads OAuth client credentials, returning `None` if no client has been saved.
+    ///
+    /// Returns [`SecretError::Corrupt`] if a stored entry cannot be decoded.
     pub fn client(&self) -> Result<Option<ClientCredentials>, SecretError> {
         let Some(raw) = self.store.get(CLIENT_USER)? else {
             return Ok(None);
@@ -94,12 +109,16 @@ impl Secrets {
         self.store.set(CLIENT_USER, &raw)
     }
 
+    /// Deletes the OAuth client and all refresh tokens associated with it.
     pub fn clear_client(&self) -> Result<(), SecretError> {
         self.clear_tokens()?;
         self.store.delete(CLIENT_USER)
     }
 
-    /// Refresh tokens by account email.
+    /// Loads saved refresh tokens keyed by account email.
+    ///
+    /// Returns an empty map if no accounts have been saved.
+    /// Returns [`SecretError::Corrupt`] if the stored map cannot be decoded.
     pub fn tokens(&self) -> Result<BTreeMap<String, String>, SecretError> {
         match self.store.get(TOKENS_USER)? {
             None => Ok(BTreeMap::new()),
@@ -121,12 +140,14 @@ impl Secrets {
         }
     }
 
+    /// Saves or replaces the refresh token for `account` without changing other accounts.
     pub fn set_token(&self, account: &str, token: &str) -> Result<(), SecretError> {
         let mut tokens = self.tokens()?;
         tokens.insert(account.to_string(), token.to_string());
         self.write_tokens(&tokens)
     }
 
+    /// Removes `account`'s refresh token; succeeds if it was already absent.
     pub fn remove_token(&self, account: &str) -> Result<(), SecretError> {
         let mut tokens = self.tokens()?;
         if tokens.remove(account).is_some() {
@@ -146,6 +167,7 @@ impl Secrets {
         self.store.get(LEGACY_REFRESH_USER)
     }
 
+    /// Deletes the unassociated refresh token used by older single-account builds.
     pub fn delete_legacy_token(&self) -> Result<(), SecretError> {
         self.store.delete(LEGACY_REFRESH_USER)
     }
