@@ -24,6 +24,8 @@ pub struct Prefs {
     pub reminders: bool,
     pub clock_24h: bool,
     pub view: ViewMode,
+    /// Show events you declined (greyed and struck through). Off: they are hidden everywhere.
+    pub show_declined: bool,
     /// Demo mode: never written to disk.
     #[serde(skip)]
     pub ephemeral: bool,
@@ -36,6 +38,7 @@ impl Default for Prefs {
             reminders: true,
             clock_24h: true,
             view: ViewMode::Month,
+            show_declined: false,
             ephemeral: false,
         }
     }
@@ -94,5 +97,6 @@ mod tests {
         let p: Prefs = serde_json::from_str(r#"{"view":"week","future":1}"#).unwrap();
         assert_eq!(p.view, ViewMode::Week);
         assert!(p.reminders);
+        assert!(!p.show_declined);
     }
 }

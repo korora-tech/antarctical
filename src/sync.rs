@@ -56,6 +56,9 @@ pub enum Command {
 pub enum ViewId {
     Main,
     Tray,
+    /// A desktop shell (Dux) reading events over the dankcal socket (see `dankcal.rs`). Its
+    /// months load without the busy indicator, and are forgotten when it disconnects.
+    Shell,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -243,14 +246,32 @@ impl Worker {
 
     fn run(mut self, rx: mpsc::Receiver<Command>) {
         self.load_from_keyring();
+        // A command read while coalescing `Want`s, handled next.
+        let mut pending = None;
         loop {
-            let cmd = match rx.recv_timeout(Duration::from_secs(30)) {
-                Ok(cmd) => Some(cmd),
-                Err(mpsc::RecvTimeoutError::Timeout) => None,
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            let cmd = match pending.take() {
+                Some(cmd) => Some(cmd),
+                None => match rx.recv_timeout(Duration::from_secs(30)) {
+                    Ok(cmd) => Some(cmd),
+                    Err(mpsc::RecvTimeoutError::Timeout) => None,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                },
             };
             match cmd {
                 Some(Command::Shutdown) => break,
+                // Of queued requests from the same surface, only the latest matters.
+                Some(Command::Want(view, mut months)) => {
+                    while let Ok(next) = rx.try_recv() {
+                        match next {
+                            Command::Want(v, m) if v == view => months = m,
+                            other => {
+                                pending = Some(other);
+                                break;
+                            }
+                        }
+                    }
+                    self.handle(Command::Want(view, months));
+                }
                 Some(cmd) => self.handle(cmd),
                 None => self.tick(),
             }
@@ -828,11 +849,9 @@ impl Worker {
         if !self.accounts.iter().any(|a| !a.calendars.is_empty()) {
             return;
         }
-        let missing: Vec<Date> = self
-            .visible
-            .values()
-            .flatten()
-            .copied()
+        let wanted: BTreeSet<Date> = self.visible.values().flatten().copied().collect();
+        let missing: Vec<Date> = wanted
+            .into_iter()
             .filter(|m| {
                 self.fetched
                     .get(m)
@@ -842,13 +861,23 @@ impl Worker {
         if missing.is_empty() {
             return;
         }
-        self.emit(SyncEvent::Busy(true));
+        // Months only the shell wants load quietly, without the UI's busy indicator.
+        let busy = missing.iter().any(|m| {
+            self.visible
+                .iter()
+                .any(|(view, months)| *view != ViewId::Shell && months.contains(m))
+        });
+        if busy {
+            self.emit(SyncEvent::Busy(true));
+        }
         if let Some(problems) = self.fetch_months(&missing)
             && !problems.is_empty()
         {
             self.report(&problems);
         }
-        self.emit(SyncEvent::Busy(false));
+        if busy {
+            self.emit(SyncEvent::Busy(false));
+        }
     }
 
     /// Fetches `months` with one request per calendar per contiguous run of months, and

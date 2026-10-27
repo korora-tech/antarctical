@@ -159,6 +159,7 @@ impl Render for SettingsView {
         let stored_id = store.client_id.clone();
         let reminders = store.prefs.reminders;
         let clock_24h = store.prefs.clock_24h;
+        let show_declined = store.prefs.show_declined;
         let secret_masked = self.client_secret.read(cx).is_masked();
 
         let client_card = card("Google OAuth client")
@@ -391,6 +392,19 @@ impl Render for SettingsView {
                 self.click(cx, |this, _, cx| {
                     this.store.update(cx, |s, cx| {
                         s.prefs.clock_24h = !s.prefs.clock_24h;
+                        s.prefs.save();
+                        cx.notify();
+                    })
+                }),
+            ))
+            .child(checkbox_row(
+                "pref-declined",
+                "Show events I declined",
+                ACCENT,
+                show_declined,
+                self.click(cx, |this, _, cx| {
+                    this.store.update(cx, |s, cx| {
+                        s.prefs.show_declined = !s.prefs.show_declined;
                         s.prefs.save();
                         cx.notify();
                     })

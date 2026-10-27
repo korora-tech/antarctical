@@ -1,7 +1,7 @@
 //! Everything the UI knows, built only from [`SyncEvent`]s. Wrapped in a GPUI entity by the app
 //! so that every window, the tray and the reminder timer read the same state.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::Instant;
 
 use jiff::Timestamp;
@@ -151,7 +151,8 @@ impl Store {
 
     /// Events on visible calendars overlapping `[from, to)`, de-duplicated (an event spanning
     /// months is in several chunks; a calendar shared with two accounts lists it twice) and
-    /// sorted all-day first, then by start.
+    /// sorted all-day first, then by start. Declined events are left out unless
+    /// [`Prefs::show_declined`] is on.
     pub fn events_between(&self, from: Date, to: Date, tz: &TimeZone) -> Vec<&Event> {
         let months = months_between(from, to);
         let mut seen = HashSet::new();
@@ -166,6 +167,10 @@ impl Store {
                     continue;
                 };
                 for e in events {
+                    // Before `seen`: another account's copy of the event may not be declined.
+                    if e.declined() && !self.prefs.show_declined {
+                        continue;
+                    }
                     if !seen.insert((cal.remote_id.as_str(), e.id.as_str())) {
                         continue;
                     }
@@ -186,6 +191,54 @@ impl Store {
                 .then_with(|| a.instants(tz).0.cmp(&b.instants(tz).0))
                 .then_with(|| a.title.cmp(&b.title))
         });
+        out
+    }
+
+    /// Months (first days) with events loaded for at least one calendar.
+    pub fn loaded_months(&self) -> BTreeSet<Date> {
+        self.chunks
+            .values()
+            .flat_map(|months| months.keys().copied())
+            .collect()
+    }
+
+    /// Every loaded event of every calendar, hidden or not, declined or not, each paired with
+    /// the calendar it is shown under. Events are de-duplicated as in [`Store::events_between`]:
+    /// of the copies of an event on a calendar shared by two accounts, one that is not declined
+    /// wins, then one on a visible calendar.
+    pub fn loaded_events(&self) -> Vec<(&Calendar, &Event)> {
+        let mut cals: Vec<&Calendar> = self.calendars.iter().collect();
+        // Stable: visible calendars first, otherwise in sidebar order.
+        cals.sort_by_key(|c| !self.is_visible(c));
+        let mut months: Vec<Date> = self.loaded_months().into_iter().collect();
+        months.sort();
+        let mut index: HashMap<(&str, &str), usize> = HashMap::new();
+        let mut out: Vec<(&Calendar, &Event)> = vec![];
+        for cal in cals {
+            for m in &months {
+                let Some(events) = self
+                    .chunks
+                    .get(cal.id.as_str())
+                    .and_then(|months| months.get(m))
+                else {
+                    continue;
+                };
+                for e in events {
+                    match index.get(&(cal.remote_id.as_str(), e.id.as_str())) {
+                        // A copy you did not decline replaces a declined one.
+                        Some(&i) => {
+                            if out[i].1.declined() && !e.declined() {
+                                out[i] = (cal, e);
+                            }
+                        }
+                        None => {
+                            index.insert((cal.remote_id.as_str(), e.id.as_str()), out.len());
+                            out.push((cal, e));
+                        }
+                    }
+                }
+            }
+        }
         out
     }
 
@@ -370,6 +423,68 @@ mod tests {
             });
         }
         assert_eq!(s.events_on(date(2026, 10, 5), &TimeZone::UTC).len(), 1);
+    }
+
+    #[test]
+    fn declined_events_follow_the_preference() {
+        use crate::model::{Attendee, Response};
+        let mut s = store();
+        let mut e = all_day("a", "skipped", date(2026, 10, 5), date(2026, 10, 6));
+        e.attendees = vec![Attendee {
+            name: "Me".into(),
+            email: "me@x".into(),
+            response: Response::Declined,
+            organizer: false,
+            is_self: true,
+        }];
+        s.apply(SyncEvent::Month {
+            calendar_id: "a".into(),
+            month: date(2026, 10, 1),
+            events: vec![e],
+        });
+        let tz = TimeZone::UTC;
+        assert!(s.events_on(date(2026, 10, 5), &tz).is_empty());
+        // Still loaded (the dankcal socket decides what to do with it).
+        assert_eq!(s.loaded_events().len(), 1);
+        s.prefs.show_declined = true;
+        assert_eq!(s.events_on(date(2026, 10, 5), &tz).len(), 1);
+    }
+
+    #[test]
+    fn shared_event_prefers_the_copy_you_did_not_decline() {
+        use crate::model::{Attendee, Response};
+        let mut s = store();
+        let shared = |account: &str| Calendar {
+            id: Calendar::key(account, "team@group"),
+            account: account.into(),
+            remote_id: "team@group".into(),
+            name: "Team".into(),
+            color: 3,
+            primary: false,
+            default_reminders: vec![],
+            selected_upstream: true,
+        };
+        s.apply(SyncEvent::Calendars(vec![shared("me@x"), shared("work@x")]));
+        for (account, response) in [("me@x", Response::Declined), ("work@x", Response::Accepted)] {
+            let id = Calendar::key(account, "team@group");
+            let mut e = all_day(&id, "standup", date(2026, 10, 5), date(2026, 10, 6));
+            e.attendees = vec![Attendee {
+                name: account.into(),
+                email: account.into(),
+                response,
+                organizer: false,
+                is_self: true,
+            }];
+            s.apply(SyncEvent::Month {
+                calendar_id: id,
+                month: date(2026, 10, 1),
+                events: vec![e],
+            });
+        }
+        let loaded = s.loaded_events();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].0.account, "work@x");
+        assert!(!loaded[0].1.declined());
     }
 
     #[test]

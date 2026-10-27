@@ -166,7 +166,12 @@ pub fn months_between(from: Date, to: Date) -> Vec<Date> {
     let mut m = first_of_month(from);
     while m < to {
         out.push(m);
-        m = add_months(m, 1);
+        let next = add_months(m, 1);
+        // `add_months` saturates at the end of the representable range.
+        if next <= m {
+            break;
+        }
+        m = next;
     }
     if out.is_empty() {
         out.push(first_of_month(from));
@@ -279,6 +284,11 @@ mod tests {
         assert_eq!(
             months_between(date(2026, 10, 5), date(2026, 11, 1)),
             vec![date(2026, 10, 1)]
+        );
+        // Terminates at the end of time.
+        assert_eq!(
+            months_between(date(9999, 12, 5), date(9999, 12, 31)),
+            vec![date(9999, 12, 1)]
         );
     }
 

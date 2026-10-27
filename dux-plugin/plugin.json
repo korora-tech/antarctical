@@ -1,0 +1,13 @@
+{
+	"id": "antarcticalNextEvent",
+	"name": "Antarctical Next Event",
+	"description": "Shows the current or next event today from Antarctical, with a Join button for video calls",
+	"version": "1.0.0",
+	"author": "Korora",
+	"type": "widget",
+	"capabilities": ["dankbar-widget"],
+	"component": "./NextEvent.qml",
+	"icon": "event",
+	"requires": ["antarctical", "xdg-open"],
+	"permissions": ["settings_read"]
+}

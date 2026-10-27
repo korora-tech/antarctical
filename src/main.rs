@@ -1,4 +1,5 @@
 mod config;
+mod dankcal;
 mod demo;
 mod google;
 mod layout;
@@ -10,7 +11,7 @@ mod sync;
 mod tray;
 mod ui;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
 use std::time::Duration;
@@ -20,6 +21,7 @@ use gpui_platform::application;
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, Zoned};
 
+use dankcal::ShellAction;
 use store::Store;
 use sync::Command;
 use tray::{Tray, TrayAction, TrayContent};
@@ -29,7 +31,11 @@ const USAGE: &str = "usage: antarctical [--demo] [--hidden]
   --demo     run with generated calendars (no Google account, nothing stored)
   --hidden   start in the tray without opening the window
 
-Environment: ANTARCTICAL_DEMO=1 is the same as --demo.";
+Only one Antarctical runs at a time: launching it again shows the running one's window
+(a second --hidden launch does nothing). --demo runs alongside, without the Dux socket.
+
+Environment: ANTARCTICAL_DEMO=1 is the same as --demo. DANKCAL_SOCKET overrides where the
+socket for the Dux shell is created (default $XDG_RUNTIME_DIR/dankcal-<pid>.sock).";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -54,6 +60,19 @@ fn main() {
         }
     }
 
+    // Before anything else (the keyring, a sign-in): either another Antarctical takes over,
+    // or this one owns the socket Dux reads. Demo mode stays out of both: it must not feed
+    // generated events to Dux or stand in for the real app.
+    let listener = match (!demo).then(|| dankcal::claim(!hidden)) {
+        None => None,
+        Some(dankcal::Claim::Bound(l)) => Some(l),
+        Some(dankcal::Claim::HandedOff) => return,
+        Some(dankcal::Claim::Unavailable(why)) => {
+            eprintln!("antarctical: no dankcal socket for Dux ({why})");
+            None
+        }
+    };
+
     let mut prefs = config::Prefs::load();
     prefs.ephemeral = demo;
     let worker = if demo {
@@ -66,9 +85,21 @@ fn main() {
         Err(error) => {
             let kind = if demo { "demo" } else { "Google sync" };
             eprintln!("antarctical: could not start the {kind} worker: {error}");
+            if let Some(l) = listener {
+                l.discard();
+            }
             std::process::exit(1);
         }
     };
+    let (shell_tx, shell_rx) = async_channel::unbounded();
+    let shell = listener.map(|l| {
+        Rc::new(ShellPush::new(dankcal::Server::start(
+            l,
+            sync.clone(),
+            shell_tx,
+            TimeZone::system(),
+        )))
+    });
 
     // Explicit: closing the last window must not quit while the tray keeps the app alive;
     // `on_window_closed` below quits when there is no tray.
@@ -125,6 +156,24 @@ fn main() {
                 .detach();
             }
 
+            // The Dux socket serves what the store holds; its clients can ask for the window.
+            {
+                let store = store.clone();
+                cx.spawn(async move |cx| {
+                    while let Ok(action) = shell_rx.recv().await {
+                        cx.update(|cx| match action {
+                            ShellAction::Show => ui::show_main_window(&store, cx),
+                        });
+                    }
+                })
+                .detach();
+            }
+            if let Some(shell) = shell.clone() {
+                shell.schedule(store.clone(), cx);
+                cx.observe(&store, move |store, cx| shell.schedule(store, cx))
+                    .detach();
+            }
+
             // Tray contents follow the store, and the clock (date rollover, events ending).
             if let Some(tray) = tray.clone() {
                 cx.observe(&store, move |store, cx| {
@@ -145,6 +194,9 @@ fn main() {
                 let sync = sync.clone();
                 cx.on_app_quit(move |_| {
                     sync.send(Command::Shutdown);
+                    if let Some(shell) = &shell {
+                        shell.server.shutdown();
+                    }
                     if let Some(tray) = &tray {
                         tray.tray.shutdown();
                     }
@@ -229,6 +281,46 @@ impl TrayPush {
         let tray = self.tray.clone();
         cx.background_spawn(async move { tray.update(content) })
             .detach();
+    }
+}
+
+/// Publishes the store to the Dux socket. A sync delivers one month of one calendar at a time,
+/// so publishing waits for the burst to settle; pushes are only sent when something changed.
+struct ShellPush {
+    server: dankcal::Server,
+    scheduled: Cell<bool>,
+}
+
+impl ShellPush {
+    fn new(server: dankcal::Server) -> Self {
+        Self {
+            server,
+            scheduled: Cell::new(false),
+        }
+    }
+
+    fn schedule(self: &Rc<Self>, store: Entity<Store>, cx: &mut App) {
+        if self.scheduled.replace(true) {
+            return;
+        }
+        let this = self.clone();
+        cx.spawn(async move |cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(250))
+                .await;
+            cx.update(|cx| {
+                this.scheduled.set(false);
+                let snapshot = dankcal::snapshot(store.read(cx), &TimeZone::system());
+                let topics = this.server.publish(snapshot);
+                if !topics.is_empty() {
+                    // Socket writes can block on a slow client; keep them off the UI thread.
+                    let server = this.server.clone();
+                    cx.background_spawn(async move { server.push(&topics) })
+                        .detach();
+                }
+            });
+        })
+        .detach();
     }
 }
 
