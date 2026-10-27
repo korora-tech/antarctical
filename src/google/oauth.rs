@@ -18,13 +18,26 @@ use sha2::{Digest, Sha256};
 pub const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 pub const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 pub const REVOKE_URL: &str = "https://oauth2.googleapis.com/revoke";
-/// Space-separated, as registered on the consent screen. Full calendar access is requested
-/// ahead of editing support; the API client still only reads.
-pub const SCOPE: &str = "openid \
-    https://www.googleapis.com/auth/userinfo.email \
-    https://www.googleapis.com/auth/userinfo.profile \
-    https://www.googleapis.com/auth/calendar \
-    https://www.googleapis.com/auth/calendar.app.created";
+pub const SCOPE: &str = "https://www.googleapis.com/auth/calendar.readonly";
+pub const EVENTS_SCOPE: &str = "https://www.googleapis.com/auth/calendar.events";
+pub const CALENDAR_LIST_READONLY_SCOPE: &str =
+    "https://www.googleapis.com/auth/calendar.calendarlist.readonly";
+pub const RSVP_SCOPES: &str = "https://www.googleapis.com/auth/calendar.events \
+     https://www.googleapis.com/auth/calendar.calendarlist.readonly";
+
+pub fn scopes_for_reply(enabled: bool) -> &'static str {
+    if enabled { RSVP_SCOPES } else { SCOPE }
+}
+
+/// Whether an OAuth token response explicitly includes the scopes needed to reply.
+/// OAuth omits `scope` when the granted set is identical to the requested set.
+pub fn reply_scopes_granted(granted: Option<&str>) -> bool {
+    let Some(granted) = granted else {
+        return true;
+    };
+    let scopes: Vec<&str> = granted.split_whitespace().collect();
+    scopes.contains(&EVENTS_SCOPE) && scopes.contains(&CALENDAR_LIST_READONLY_SCOPE)
+}
 
 /// A Google "Desktop app" OAuth client. Google requires the secret for desktop clients even
 /// though it cannot be kept confidential; it is still treated as a secret locally.
@@ -108,14 +121,22 @@ pub fn new_pkce() -> Pkce {
     }
 }
 
-pub fn authorize_url(client_id: &str, redirect_uri: &str, challenge: &str, state: &str) -> String {
+pub fn authorize_url(
+    client_id: &str,
+    redirect_uri: &str,
+    challenge: &str,
+    state: &str,
+    scope: &str,
+    login_hint: Option<&str>,
+) -> String {
     let mut url = url::Url::parse(AUTH_URL)
         .expect("AUTH_URL is the fixed Google OAuth authorization endpoint");
-    url.query_pairs_mut()
+    let mut query = url.query_pairs_mut();
+    query
         .append_pair("client_id", client_id)
         .append_pair("redirect_uri", redirect_uri)
         .append_pair("response_type", "code")
-        .append_pair("scope", SCOPE)
+        .append_pair("scope", scope)
         .append_pair("code_challenge", challenge)
         .append_pair("code_challenge_method", "S256")
         .append_pair("state", state)
@@ -124,6 +145,10 @@ pub fn authorize_url(client_id: &str, redirect_uri: &str, challenge: &str, state
         // instead of silently re-using the one signed in to the browser.
         .append_pair("access_type", "offline")
         .append_pair("prompt", "select_account consent");
+    if let Some(email) = login_hint {
+        query.append_pair("login_hint", email);
+    }
+    drop(query);
     url.into()
 }
 
@@ -304,6 +329,7 @@ pub struct TokenResponse {
     pub access_token: String,
     pub expires_in: u64,
     pub refresh_token: Option<String>,
+    pub scope: Option<String>,
 }
 
 impl fmt::Debug for TokenResponse {
@@ -414,22 +440,37 @@ mod tests {
     }
 
     #[test]
-    fn scopes_match_the_consent_screen() {
-        assert_eq!(
-            SCOPE.split(' ').collect::<Vec<_>>(),
-            [
-                "openid",
-                "https://www.googleapis.com/auth/userinfo.email",
-                "https://www.googleapis.com/auth/userinfo.profile",
-                "https://www.googleapis.com/auth/calendar",
-                "https://www.googleapis.com/auth/calendar.app.created",
-            ]
+    fn authorization_scopes_are_opt_in_per_account() {
+        assert_eq!(scopes_for_reply(false), SCOPE);
+        assert!(
+            !scopes_for_reply(false)
+                .split_whitespace()
+                .any(|scope| scope == EVENTS_SCOPE)
         );
+        let reply_scopes: Vec<_> = scopes_for_reply(true).split_whitespace().collect();
+        assert!(reply_scopes.contains(&EVENTS_SCOPE));
+        assert!(reply_scopes.contains(&CALENDAR_LIST_READONLY_SCOPE));
+        assert!(!reply_scopes.contains(&SCOPE));
+    }
+
+    #[test]
+    fn explicit_granted_scopes_must_include_both_rsvp_and_calendar_list_access() {
+        assert!(reply_scopes_granted(None));
+        assert!(reply_scopes_granted(Some(RSVP_SCOPES)));
+        assert!(!reply_scopes_granted(Some(SCOPE)));
+        assert!(!reply_scopes_granted(Some(EVENTS_SCOPE)));
     }
 
     #[test]
     fn authorize_url_has_required_params() {
-        let u = authorize_url("id.apps", "http://127.0.0.1:5555", "chal", "st");
+        let u = authorize_url(
+            "id.apps",
+            "http://127.0.0.1:5555",
+            "chal",
+            "st",
+            SCOPE,
+            None,
+        );
         let url = url::Url::parse(&u).unwrap();
         let q: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
         assert_eq!(q["client_id"], "id.apps");
@@ -439,6 +480,23 @@ mod tests {
         assert_eq!(q["access_type"], "offline");
         assert_eq!(q["prompt"], "select_account consent");
         assert_eq!(q["state"], "st");
+        assert!(!q.contains_key("login_hint"));
+    }
+
+    #[test]
+    fn authorize_url_hints_the_existing_account() {
+        let u = authorize_url(
+            "id.apps",
+            "http://127.0.0.1:5555",
+            "chal",
+            "st",
+            scopes_for_reply(true),
+            Some("me@example.com"),
+        );
+        let url = url::Url::parse(&u).unwrap();
+        let q: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(q["login_hint"], "me@example.com");
+        assert_eq!(q["scope"], scopes_for_reply(true));
     }
 
     #[test]

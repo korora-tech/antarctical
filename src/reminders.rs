@@ -126,6 +126,11 @@ mod tests {
         d.attendees = vec![Attendee {
             name: "me".into(),
             email: "me".into(),
+            display_name: None,
+            comment: None,
+            additional_guests: None,
+            optional: None,
+            resource: None,
             response: Response::Declined,
             organizer: false,
             is_self: true,

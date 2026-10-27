@@ -20,11 +20,12 @@ A native Google Calendar viewer for Linux, built with Rust and [GPUI](https://ww
 - **A fixed penguin tray icon:** open a compact calendar and agenda. The icon never shows a date badge.
 - **Desktop reminders:** use Google Calendar's popup reminders. Hidden calendars and declined events never notify.
 - **Meeting details:** see guests, location and description, join a video call, or open the event in Google Calendar.
+- **Invitation replies:** opt in per account to answer invitations with Yes, No or Maybe; replies update only that event occurrence.
 - **Automatic sync:** refresh every five minutes, refresh manually, and retry temporary network failures.
 - **Local credential storage:** refresh tokens stay in your system keyring; calendar data stays in memory. No app analytics or telemetry.
 - **Linux desktop integration:** Wayland and X11, Nix packages, Home Manager autostart, and an optional Dux next-event widget.
 
-**Current limits:** Antarctical is a viewer. Creating or editing events and replying to invitations are not implemented. There is no persistent offline cache, so calendars are fetched again at startup. The Google consent screen currently requests full calendar access in preparation for editing support; the app only reads calendars today.
+**Current limits:** Antarctical does not create or edit events, and RSVP is off by default for every account. Enabling replies requests Google's event-write scope through a fresh sign-in for that account. There is no persistent offline cache, so calendars are fetched again at startup.
 
 ## Try it without a Google account
 
@@ -62,6 +63,8 @@ Your desktop needs:
 1. [Request tester access](mailto:david@rawkode.academy?subject=Antarctical%20tester%20access) and wait for confirmation for the Google account you intend to use.
 2. Open Antarctical and choose **Sign in with Google**. Complete consent in your browser, then return to the app.
 3. To connect another approved account, open **Settings → Google accounts → Add another account**.
+
+Accounts are read-only by default. To answer invitations for an account, turn on **Reply to invitations** in Settings and complete the fresh Google sign-in. Turning it off hides reply controls and future sign-ins request read-only access; it does not revoke Google's existing grant. Remove the account to revoke its authorization.
 
 You can also configure your own Google Desktop OAuth client in Settings. See the [Google Calendar guide](docs/google-calendar.md) for instructions, testing-mode sign-in expiry, credential storage and sync behaviour.
 

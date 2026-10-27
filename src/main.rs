@@ -82,7 +82,7 @@ fn main() {
     let worker = if mode == Mode::Demo {
         demo::start()
     } else {
-        sync::start_google(secrets::Secrets::keyring())
+        sync::start_google(secrets::Secrets::keyring(), prefs.rsvp_accounts.clone())
     };
     let (sync, events) = match worker {
         Ok(worker) => worker,

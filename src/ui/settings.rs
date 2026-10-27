@@ -41,9 +41,8 @@ const STATUS_LOCKED: &str = "Keyring locked: unlock it and press Ctrl+R";
 const STATUS_SAVED: &str = "Client ID and secret are stored in the keyring";
 const STATUS_BUILTIN: &str = "Using the built-in client";
 const ACCOUNT_SIGN_IN_INFO: &str =
-    "No account yet. Each account's refresh token is kept in the keyring.";
-const ACCOUNT_SIGNED_IN_INFO: &str =
-    "Each account's refresh token is kept in the keyring; removing an account revokes it.";
+    "No account yet. Accounts are read-only by default; RSVP needs a fresh, per-account sign-in.";
+const ACCOUNT_SIGNED_IN_INFO: &str = "Accounts are read-only by default. Enable replies per account with a fresh sign-in; turning the option off hides replies but does not revoke Google's existing grant. Remove the account to revoke it.";
 const SIGN_IN_PENDING_INFO: &str =
     "Waiting for you to choose an account and approve access in the browser…";
 
@@ -182,8 +181,10 @@ impl Render for SettingsView {
         let store = self.store.read(cx);
         let auth = store.auth.clone();
         let accounts = store.accounts.clone();
-        let signing_in = store.signing_in.clone();
+        let reply_accounts = store.prefs.rsvp_accounts.clone();
         let demo = store.mode == Mode::Demo;
+        let can_reply_toggle = store.auth == AuthState::Ready || demo;
+        let signing_in = store.signing_in.clone();
         let stored_id = store.client_id.clone();
         let reminders = store.prefs.reminders;
         let clock_24h = store.prefs.clock_24h;
@@ -310,52 +311,77 @@ impl Render for SettingsView {
                 AuthState::Ready => ACCOUNT_SIGNED_IN_INFO,
             };
             let can_add = auth == AuthState::Ready;
+            let can_toggle_reply = can_reply_toggle && signing_in.is_none();
             let rows = accounts.iter().map(|email| {
                 let target = email.clone();
+                let reply_target = email.clone();
+                let reply_enabled = reply_accounts.contains(email);
                 div()
                     .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(rgb(BORDER))
-                    .bg(rgb(PANEL_RAISED))
-                    .px_3()
-                    .py_2()
+                    .flex_col()
+                    .gap_1()
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap_2()
-                            .min_w(px(0.0))
+                            .justify_between()
+                            .gap_3()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(rgb(BORDER))
+                            .bg(rgb(PANEL_RAISED))
+                            .px_3()
+                            .py_2()
                             .child(
                                 div()
-                                    .size(px(7.0))
-                                    .flex_shrink_0()
-                                    .rounded_full()
-                                    .bg(rgb(GREEN)),
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .min_w(px(0.0))
+                                    .child(
+                                        div()
+                                            .size(px(7.0))
+                                            .flex_shrink_0()
+                                            .rounded_full()
+                                            .bg(rgb(GREEN)),
+                                    )
+                                    .child(
+                                        div()
+                                            .truncate()
+                                            .text_size(px(12.0))
+                                            .text_color(rgb(TEXT))
+                                            .child(email.clone()),
+                                    ),
                             )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(12.0))
-                                    .text_color(rgb(TEXT))
-                                    .child(email.clone()),
-                            ),
+                            .when(can_add, |d| {
+                                d.child(button(
+                                    SharedString::from(format!("remove-{email}")),
+                                    "Remove",
+                                    ButtonStyle::Danger,
+                                    Some(self.click(cx, move |this, _, cx| {
+                                        this.store
+                                            .read(cx)
+                                            .send(Command::RemoveAccount(target.clone()))
+                                    })),
+                                ))
+                            }),
                     )
-                    .when(can_add, |d| {
-                        d.child(button(
-                            SharedString::from(format!("remove-{email}")),
-                            "Remove",
-                            ButtonStyle::Danger,
-                            Some(self.click(cx, move |this, _, cx| {
-                                this.store
-                                    .read(cx)
-                                    .send(Command::RemoveAccount(target.clone()))
-                            })),
-                        ))
-                    })
+                    .child(checkbox_row(
+                        SharedString::from(format!("reply-{email}")),
+                        "Reply to invitations",
+                        if can_toggle_reply { ACCENT } else { DISABLED },
+                        reply_enabled,
+                        can_toggle_reply.then(|| {
+                            self.click(cx, move |this, _, cx| {
+                                this.store.update(cx, |store, cx| {
+                                    if store.signing_in.is_none() {
+                                        store.set_reply_enabled(&reply_target, !reply_enabled);
+                                        cx.notify();
+                                    }
+                                });
+                            })
+                        }),
+                    ))
             });
             let footer = match (&signing_in, can_add) {
                 (Some(url), _) => {
@@ -411,39 +437,39 @@ impl Render for SettingsView {
                 "Desktop notifications for event reminders",
                 ACCENT,
                 reminders,
-                self.click(cx, |this, _, cx| {
+                Some(self.click(cx, |this, _, cx| {
                     this.store.update(cx, |s, cx| {
                         s.prefs.reminders = !s.prefs.reminders;
                         s.prefs.save();
                         cx.notify();
                     })
-                }),
+                })),
             ))
             .child(checkbox_row(
                 "pref-clock",
                 "24-hour clock",
                 ACCENT,
                 clock_24h,
-                self.click(cx, |this, _, cx| {
+                Some(self.click(cx, |this, _, cx| {
                     this.store.update(cx, |s, cx| {
                         s.prefs.clock_24h = !s.prefs.clock_24h;
                         s.prefs.save();
                         cx.notify();
                     })
-                }),
+                })),
             ))
             .child(checkbox_row(
                 "pref-declined",
                 "Show events I declined",
                 ACCENT,
                 show_declined,
-                self.click(cx, |this, _, cx| {
+                Some(self.click(cx, |this, _, cx| {
                     this.store.update(cx, |s, cx| {
                         s.prefs.show_declined = !s.prefs.show_declined;
                         s.prefs.save();
                         cx.notify();
                     })
-                }),
+                })),
             ));
 
         div()

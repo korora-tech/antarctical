@@ -1,5 +1,5 @@
-//! Google Calendar API v3, read-only: `calendarList.list` and `events.list` with
-//! `singleEvents=true` so Google expands recurrences for us.
+//! Google Calendar API v3: calendar and event reads plus opt-in RSVP updates. `singleEvents=true`
+//! expands recurrences so replies target only the selected occurrence.
 
 use std::fmt;
 use std::time::Duration;
@@ -22,6 +22,7 @@ const EVENT_FIELDS: &str = "items(id,status,summary,description,location,htmlLin
     start,end,colorId,eventType,attendees(email,displayName,responseStatus,organizer,self),\
     organizer(email,displayName,self),reminders,conferenceData(entryPoints(entryPointType,uri))),\
     nextPageToken";
+const ATTENDEE_FIELDS: &str = "etag,attendeesOmitted,attendees(email,displayName,responseStatus,organizer,self,comment,additionalGuests,optional,resource)";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApiError {
@@ -37,6 +38,7 @@ pub enum ApiError {
         body: String,
     },
     Decode(String),
+    InvalidRequest(String),
 }
 
 impl fmt::Display for ApiError {
@@ -51,6 +53,7 @@ impl fmt::Display for ApiError {
                 write!(f, "Google Calendar returned HTTP {status}: {body}")
             }
             ApiError::Decode(m) => write!(f, "Unexpected response from Google: {m}"),
+            ApiError::InvalidRequest(m) => write!(f, "Cannot update this invitation: {m}"),
         }
     }
 }
@@ -105,22 +108,103 @@ fn error_message(body: &str) -> String {
     #[derive(Deserialize)]
     struct Inner {
         message: String,
+        #[serde(default)]
+        errors: Vec<Detail>,
+    }
+    #[derive(Deserialize)]
+    struct Detail {
+        reason: Option<String>,
     }
     serde_json::from_str::<Envelope>(body)
-        .map(|e| e.error.message)
+        .map(|e| {
+            let reason = e.error.errors.into_iter().find_map(|detail| detail.reason);
+            match reason {
+                Some(reason) => format!("{} ({reason})", e.error.message),
+                None => e.error.message,
+            }
+        })
         .unwrap_or_else(|_| body.chars().take(200).collect())
 }
 
-/// The account's email: the id of its primary calendar (available under any calendar scope,
-/// so no extra identity scope is needed).
-pub fn primary_email(agent: &ureq::Agent, token: &str) -> Result<String, ApiError> {
-    #[derive(Deserialize)]
-    struct Primary {
-        id: String,
+fn http_error(status: u16, body: &str) -> ApiError {
+    match status {
+        401 => ApiError::Unauthorized,
+        404 | 410 => ApiError::NotFound,
+        429 => ApiError::RateLimited,
+        403 if body.contains("rateLimitExceeded") || body.contains("RATE_LIMIT") => {
+            ApiError::RateLimited
+        }
+        403 => ApiError::Forbidden(error_message(body)),
+        _ => ApiError::Http {
+            status,
+            body: error_message(body),
+        },
     }
-    let url = url::Url::parse(&format!("{BASE}/calendars/primary?fields=id"))
-        .expect("BASE and the primary-calendar path form a valid Google API URL");
-    get::<Primary>(agent, &url, token).map(|p| p.id)
+}
+
+impl ApiError {
+    pub fn missing_scope(&self) -> bool {
+        matches!(
+            self,
+            ApiError::Forbidden(message)
+                if {
+                    let message = message.to_ascii_lowercase();
+                    message.contains("insufficient authentication scopes")
+                        || message.contains("insufficientpermissions")
+                }
+        )
+    }
+}
+
+/// The account's email: the id of its primary calendar (available under `calendarList.readonly`).
+pub fn primary_email(agent: &ureq::Agent, token: &str) -> Result<String, ApiError> {
+    let mut page: Option<String> = None;
+    loop {
+        let mut url = url::Url::parse(&format!("{BASE}/users/me/calendarList"))
+            .expect("BASE and the calendar-list path form a valid Google API URL");
+        {
+            let mut query = url.query_pairs_mut();
+            query
+                .append_pair("maxResults", "250")
+                .append_pair("fields", "items(id,primary),nextPageToken");
+            if let Some(page) = &page {
+                query.append_pair("pageToken", page);
+            }
+        }
+        let result: PrimaryCalendarList = get(agent, &url, token)?;
+        if let Some(email) = primary_calendar_id(result.items) {
+            return Ok(email);
+        }
+        let Some(next) = result.next_page_token else {
+            break;
+        };
+        page = Some(next);
+    }
+    Err(ApiError::Decode(
+        "Google did not return a primary calendar in its calendar list".into(),
+    ))
+}
+
+fn primary_calendar_id(items: Vec<PrimaryCalendar>) -> Option<String> {
+    items
+        .into_iter()
+        .find(|calendar| calendar.primary)
+        .map(|calendar| calendar.id)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrimaryCalendarList {
+    #[serde(default)]
+    items: Vec<PrimaryCalendar>,
+    next_page_token: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PrimaryCalendar {
+    id: String,
+    #[serde(default)]
+    primary: bool,
 }
 
 /// The calendars listed under `account`, primary first, then by name.
@@ -202,6 +286,164 @@ pub fn events(
     Ok(out)
 }
 
+#[cfg(test)]
+fn response_patch_body(event: &Event, response: Response) -> Result<serde_json::Value, ApiError> {
+    response_patch_body_from_attendees(&event.attendees, response)
+}
+
+fn response_patch_body_from_attendees(
+    attendees: &[Attendee],
+    response: Response,
+) -> Result<serde_json::Value, ApiError> {
+    let self_attendees = attendees.iter().filter(|a| a.is_self).count();
+    if self_attendees != 1 || attendees.iter().any(|a| a.is_self && a.organizer) {
+        return Err(ApiError::InvalidRequest(
+            "the event must have exactly one non-organizer self attendee".into(),
+        ));
+    }
+    if attendees.iter().any(|a| a.email.is_empty()) {
+        return Err(ApiError::InvalidRequest(
+            "an attendee has no email address to preserve".into(),
+        ));
+    }
+
+    let attendees: Vec<serde_json::Value> = attendees
+        .iter()
+        .map(|attendee| {
+            let mut fields = serde_json::Map::new();
+            fields.insert(
+                "email".into(),
+                serde_json::Value::String(attendee.email.clone()),
+            );
+            if let Some(name) = &attendee.display_name {
+                fields.insert(
+                    "displayName".into(),
+                    serde_json::Value::String(name.clone()),
+                );
+            }
+            if let Some(comment) = &attendee.comment {
+                fields.insert("comment".into(), serde_json::Value::String(comment.clone()));
+            }
+            if let Some(guests) = attendee.additional_guests {
+                fields.insert("additionalGuests".into(), serde_json::json!(guests));
+            }
+            if let Some(optional) = attendee.optional {
+                fields.insert("optional".into(), serde_json::json!(optional));
+            }
+            if let Some(resource) = attendee.resource {
+                fields.insert("resource".into(), serde_json::json!(resource));
+            }
+            let status = if attendee.is_self {
+                response
+            } else {
+                attendee.response
+            };
+            fields.insert(
+                "responseStatus".into(),
+                serde_json::Value::String(google_response(status).into()),
+            );
+            serde_json::Value::Object(fields)
+        })
+        .collect();
+    Ok(serde_json::json!({"attendees": attendees}))
+}
+
+fn response_patch_body_from_self_attendee(
+    attendees: &[Attendee],
+    response: Response,
+) -> Result<serde_json::Value, ApiError> {
+    let mut self_attendees = attendees.iter().filter(|attendee| attendee.is_self);
+    let Some(attendee) = self_attendees.next() else {
+        return Err(ApiError::InvalidRequest(
+            "the event must have exactly one non-organizer self attendee".into(),
+        ));
+    };
+    if attendee.organizer || self_attendees.next().is_some() {
+        return Err(ApiError::InvalidRequest(
+            "the event must have exactly one non-organizer self attendee".into(),
+        ));
+    }
+    if attendee.email.is_empty() {
+        return Err(ApiError::InvalidRequest(
+            "the self attendee has no email address to preserve".into(),
+        ));
+    }
+    Ok(serde_json::json!({
+        "attendeesOmitted": true,
+        "attendees": [{
+            "email": attendee.email,
+            "responseStatus": google_response(response)
+        }]
+    }))
+}
+
+fn google_response(response: Response) -> &'static str {
+    match response {
+        Response::Accepted => "accepted",
+        Response::Declined => "declined",
+        Response::Tentative => "tentative",
+        Response::NeedsAction => "needsAction",
+    }
+}
+
+/// Updates only this occurrence's RSVP from a fresh ETagged attendee snapshot.
+pub fn patch_response(
+    agent: &ureq::Agent,
+    token: &str,
+    calendar: &Calendar,
+    event: &Event,
+    response: Response,
+) -> Result<(), ApiError> {
+    patch_response_at(agent, token, calendar, event, response, BASE)
+}
+
+fn patch_response_at(
+    agent: &ureq::Agent,
+    token: &str,
+    calendar: &Calendar,
+    event: &Event,
+    response: Response,
+    api_base: &str,
+) -> Result<(), ApiError> {
+    let mut get_url = event_url(api_base, &calendar.remote_id, &event.id);
+    get_url
+        .query_pairs_mut()
+        .append_pair("fields", ATTENDEE_FIELDS);
+    let current: EventAttendees = get(agent, &get_url, token)?;
+    let (etag, body) = patch_body_from_current(current, response)?;
+
+    let url = event_url(api_base, &calendar.remote_id, &event.id);
+    let request = agent
+        .patch(url.as_str())
+        .header("Authorization", &format!("Bearer {token}"))
+        .header("If-Match", &etag);
+    let mut result = request
+        .send_json(&body)
+        .map_err(|e| ApiError::Network(e.to_string()))?;
+    let status = result.status().as_u16();
+    if (200..300).contains(&status) {
+        return Ok(());
+    }
+    let body = result
+        .body_mut()
+        .with_config()
+        .limit(BODY_LIMIT)
+        .read_to_string()
+        .map_err(|e| ApiError::Network(e.to_string()))?;
+    Err(http_error(status, &body))
+}
+
+fn event_url(api_base: &str, calendar_id: &str, event_id: &str) -> url::Url {
+    let mut url = url::Url::parse(api_base).expect("the Calendar API base is a valid URL");
+    url.path_segments_mut()
+        .expect("the API base has no query or fragment, so its path segments are mutable")
+        .push("calendars")
+        .push(calendar_id)
+        .push("events")
+        .push(event_id);
+    url
+}
+
 // ----- wire types ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
@@ -281,6 +523,39 @@ struct EventsResponse {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct EventAttendees {
+    etag: Option<String>,
+    #[serde(default)]
+    attendees_omitted: bool,
+    #[serde(default)]
+    attendees: Vec<WireAttendee>,
+}
+
+fn patch_body_from_current(
+    current: EventAttendees,
+    response: Response,
+) -> Result<(String, serde_json::Value), ApiError> {
+    let attendees_omitted = current.attendees_omitted;
+    let etag = current.etag.ok_or_else(|| {
+        ApiError::InvalidRequest(
+            "Google did not provide an event version; no response was changed".into(),
+        )
+    })?;
+    let attendees: Vec<Attendee> = current
+        .attendees
+        .into_iter()
+        .map(WireAttendee::into_model)
+        .collect();
+    let body = if attendees_omitted {
+        response_patch_body_from_self_attendee(&attendees, response)?
+    } else {
+        response_patch_body_from_attendees(&attendees, response)?
+    };
+    Ok((etag, body))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct WireEvent {
     id: String,
     status: Option<String>,
@@ -317,6 +592,36 @@ struct WireAttendee {
     organizer: bool,
     #[serde(rename = "self", default)]
     is_self: bool,
+    comment: Option<String>,
+    additional_guests: Option<u32>,
+    optional: Option<bool>,
+    resource: Option<bool>,
+}
+
+impl WireAttendee {
+    fn into_model(self) -> Attendee {
+        Attendee {
+            name: self
+                .display_name
+                .clone()
+                .or_else(|| self.email.clone())
+                .unwrap_or_default(),
+            email: self.email.unwrap_or_default(),
+            display_name: self.display_name,
+            comment: self.comment,
+            additional_guests: self.additional_guests,
+            optional: self.optional,
+            resource: self.resource,
+            response: match self.response_status.as_deref() {
+                Some("accepted") => Response::Accepted,
+                Some("declined") => Response::Declined,
+                Some("tentative") => Response::Tentative,
+                _ => Response::NeedsAction,
+            },
+            organizer: self.organizer,
+            is_self: self.is_self,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -376,22 +681,7 @@ impl WireEvent {
         let attendees = self
             .attendees
             .into_iter()
-            .map(|a| Attendee {
-                name: a
-                    .display_name
-                    .clone()
-                    .or_else(|| a.email.clone())
-                    .unwrap_or_default(),
-                email: a.email.unwrap_or_default(),
-                response: match a.response_status.as_deref() {
-                    Some("accepted") => Response::Accepted,
-                    Some("declined") => Response::Declined,
-                    Some("tentative") => Response::Tentative,
-                    _ => Response::NeedsAction,
-                },
-                organizer: a.organizer,
-                is_self: a.is_self,
-            })
+            .map(WireAttendee::into_model)
             .collect();
         Some(Event {
             id: self.id,
@@ -506,6 +796,246 @@ mod tests {
     }
 
     #[test]
+    fn regular_event_list_does_not_fetch_on_demand_attendee_fields() {
+        for field in ["comment", "additionalGuests", "optional", "resource"] {
+            assert!(
+                !EVENT_FIELDS.contains(field),
+                "regular sync requested {field}"
+            );
+            assert!(
+                ATTENDEE_FIELDS.contains(field),
+                "reply fetch omitted {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn forbidden_scope_errors_are_distinguished_from_other_forbidden_errors() {
+        let missing_scope = http_error(
+            403,
+            r#"{"error":{"message":"Permission denied","errors":[{"reason":"insufficientPermissions"}]}}"#,
+        );
+        assert!(missing_scope.missing_scope());
+        assert!(!ApiError::Forbidden("calendar is not shared".into()).missing_scope());
+    }
+
+    #[test]
+    fn response_patch_changes_only_the_self_attendee() {
+        let events = parse(
+            r#"{"items":[{"id":"occurrence-42",
+            "start":{"dateTime":"2026-10-21T09:30:00Z"},
+            "end":{"dateTime":"2026-10-21T10:00:00Z"},
+            "attendees":[
+              {"email":"me@example.com","self":true,"responseStatus":"needsAction"},
+              {"email":"organizer@example.com","displayName":"Organizer","organizer":true,"responseStatus":"accepted"}
+            ]}]}"#,
+        );
+        let body = response_patch_body(&events[0], Response::Tentative).unwrap();
+        assert_eq!(body.as_object().unwrap().len(), 1);
+        assert_eq!(
+            body["attendees"],
+            serde_json::json!([
+                {"email":"me@example.com","responseStatus":"tentative"},
+                {"email":"organizer@example.com","displayName":"Organizer","responseStatus":"accepted"}
+            ])
+        );
+    }
+
+    #[test]
+    fn response_patch_preserves_writable_fields_for_every_attendee() {
+        let events = parse(
+            r#"{"items":[{"id":"occurrence-43",
+            "start":{"dateTime":"2026-10-21T09:30:00Z"},
+            "end":{"dateTime":"2026-10-21T10:00:00Z"},
+            "attendees":[
+              {"email":"me@example.com","displayName":"Me","self":true,"responseStatus":"accepted","comment":"Arriving late","additionalGuests":2,"optional":true,"resource":true},
+              {"email":"guest@example.com","displayName":"Guest","responseStatus":"tentative","comment":"Needs access","optional":false,"resource":false}
+            ]}]}"#,
+        );
+        let body = response_patch_body(&events[0], Response::Declined).unwrap();
+        assert_eq!(
+            body["attendees"],
+            serde_json::json!([
+                {"email":"me@example.com","displayName":"Me","responseStatus":"declined","comment":"Arriving late","additionalGuests":2,"optional":true,"resource":true},
+                {"email":"guest@example.com","displayName":"Guest","responseStatus":"tentative","comment":"Needs access","optional":false,"resource":false}
+            ])
+        );
+    }
+
+    #[test]
+    fn reply_patch_uses_attendees_omitted_to_update_only_the_self_response() {
+        let truncated: EventAttendees = serde_json::from_str(
+            r#"{"etag":"tag-1","attendeesOmitted":true,"attendees":[{"email":"me@example.com","self":true}]}"#,
+        )
+        .unwrap();
+        let (etag, body) = patch_body_from_current(truncated, Response::Accepted).unwrap();
+        assert_eq!(etag, "tag-1");
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "attendeesOmitted": true,
+                "attendees": [{
+                    "email": "me@example.com",
+                    "responseStatus": "accepted"
+                }]
+            })
+        );
+    }
+
+    #[test]
+    fn reply_patch_requires_an_etag_for_concurrent_update_protection() {
+        let no_etag: EventAttendees =
+            serde_json::from_str(r#"{"attendees":[{"email":"me@example.com","self":true}]}"#)
+                .unwrap();
+        assert!(matches!(
+            patch_body_from_current(no_etag, Response::Accepted),
+            Err(ApiError::InvalidRequest(_))
+        ));
+    }
+
+    #[test]
+    fn patch_request_uses_fresh_etag_and_maps_precondition_conflict() {
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+        use std::thread;
+        use std::time::{Duration, Instant};
+
+        fn accept_with_timeout(listener: &TcpListener) -> TcpStream {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(5)))
+                            .unwrap();
+                        return stream;
+                    }
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("mock Calendar API did not receive a request: {error}"),
+                }
+            }
+        }
+
+        fn receive_request(stream: &mut TcpStream) -> String {
+            let mut request = Vec::new();
+            loop {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+                if request.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let headers = String::from_utf8_lossy(&request);
+            let body_len = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().unwrap())
+                })
+                .unwrap_or(0);
+            let mut body = vec![0; body_len];
+            stream.read_exact(&mut body).unwrap();
+            request.extend(body);
+            String::from_utf8(request).unwrap()
+        }
+
+        fn respond(stream: &mut TcpStream, status: &str, body: &str) {
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            stream.flush().unwrap();
+        }
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let server = thread::spawn(move || {
+            let mut get_stream = accept_with_timeout(&listener);
+            let get_request = receive_request(&mut get_stream);
+            respond(
+                &mut get_stream,
+                "200 OK",
+                r#"{"etag":"etag-7","attendees":[{"email":"me@example.com","self":true,"responseStatus":"needsAction"},{"email":"organizer@example.com","organizer":true,"responseStatus":"accepted"}]}"#,
+            );
+
+            let mut patch_stream = accept_with_timeout(&listener);
+            let patch_request = receive_request(&mut patch_stream);
+            respond(
+                &mut patch_stream,
+                "412 Precondition Failed",
+                r#"{"error":{"message":"event changed"}}"#,
+            );
+            (get_request, patch_request)
+        });
+
+        let event = parse(
+            r#"{"items":[{"id":"occurrence-42","start":{"dateTime":"2026-10-21T09:30:00Z"},"end":{"dateTime":"2026-10-21T10:00:00Z"},"attendees":[{"email":"me@example.com","self":true,"responseStatus":"needsAction"}]}]}"#,
+        )
+        .remove(0);
+        let api_base = format!("http://{address}/calendar/v3");
+        let result = patch_response_at(
+            &agent(),
+            "access-token",
+            &cal(),
+            &event,
+            Response::Declined,
+            &api_base,
+        );
+        let (get_request, patch_request) = server.join().unwrap();
+
+        assert!(matches!(
+            result,
+            Err(ApiError::Http { status: 412, ref body }) if body == "event changed"
+        ));
+        assert!(get_request.starts_with("GET /calendar/v3/calendars/"));
+        assert!(
+            get_request
+                .lines()
+                .next()
+                .unwrap()
+                .contains("/events/occurrence-42?fields=")
+        );
+        assert!(patch_request.starts_with("PATCH /calendar/v3/calendars/"));
+        assert!(
+            patch_request
+                .lines()
+                .next()
+                .unwrap()
+                .contains("/events/occurrence-42 HTTP/")
+        );
+        assert!(
+            patch_request
+                .to_ascii_lowercase()
+                .contains("if-match: etag-7")
+        );
+        assert!(
+            patch_request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer access-token")
+        );
+        let body = patch_request.split_once("\r\n\r\n").unwrap().1;
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(body).unwrap(),
+            serde_json::json!({
+                "attendees": [
+                    {"email":"me@example.com","responseStatus":"declined"},
+                    {"email":"organizer@example.com","responseStatus":"accepted"}
+                ]
+            })
+        );
+    }
+
+    #[test]
     fn timed_event_with_default_reminders_and_meet() {
         let evs = parse(
             r#"{"items":[{"id":"a","status":"confirmed","summary":"Standup",
@@ -556,6 +1086,18 @@ mod tests {
         assert_eq!(evs[1].title, "(No title)");
         assert_eq!(evs[1].reminders, vec![5, 30]);
         assert!(evs[1].self_response().is_none());
+    }
+
+    #[test]
+    fn primary_calendar_id_comes_from_calendar_list_entry() {
+        let items: Vec<PrimaryCalendar> = serde_json::from_str(
+            r#"[{"id":"work@example.com","primary":false},{"id":"me@example.com","primary":true}]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            primary_calendar_id(items).as_deref(),
+            Some("me@example.com")
+        );
     }
 
     #[test]

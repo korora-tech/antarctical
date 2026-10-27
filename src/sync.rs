@@ -19,7 +19,7 @@ use jiff::{Timestamp, Zoned};
 use crate::google::api::{self, ApiError};
 use crate::google::oauth::{self, AuthError, ClientCredentials, TokenResponse};
 use crate::model;
-use crate::model::{Calendar, Event};
+use crate::model::{Calendar, Event, Response};
 use crate::secrets::{SecretError, Secrets};
 
 /// How often visible data is re-fetched while signed in.
@@ -38,6 +38,19 @@ pub enum Command {
     ClearClient,
     /// Starts a browser sign-in; the account chosen there is added (or re-authorised).
     AddAccount,
+    /// Opts one account into or out of replying to invitations.
+    SetReplyEnabled {
+        email: String,
+        enabled: bool,
+    },
+    /// Re-authorises an RSVP-enabled account after Google reports a missing scope.
+    ReauthorizeRsvp(String),
+    /// Updates the response for one selected event occurrence.
+    Reply {
+        calendar: Calendar,
+        event: Box<Event>,
+        response: Response,
+    },
     CancelSignIn,
     /// Signs one account out: revokes its token and forgets it.
     RemoveAccount(String),
@@ -97,6 +110,19 @@ pub enum SyncEvent {
     Problem(Option<String>),
     /// A one-off message (saved, signed out…).
     Notice(String),
+    /// Whether this account has explicitly authorized replying to invitations.
+    ReplyAccess {
+        email: String,
+        enabled: bool,
+    },
+    /// Completion of an optimistic RSVP update.
+    ReplyFinished {
+        calendar_id: String,
+        event_id: String,
+        account: String,
+        error: Option<String>,
+        missing_scope: bool,
+    },
 }
 
 #[derive(Clone)]
@@ -116,13 +142,14 @@ impl SyncHandle {
 
 pub fn start_google(
     secrets: Secrets,
+    reply_enabled: BTreeSet<String>,
 ) -> std::io::Result<(SyncHandle, async_channel::Receiver<SyncEvent>)> {
     let (tx, rx) = mpsc::channel();
     let (etx, erx) = async_channel::unbounded();
     let self_tx = tx.clone();
     std::thread::Builder::new()
         .name("antarctical-sync".into())
-        .spawn(move || Worker::new(secrets, etx, self_tx).run(rx))?;
+        .spawn(move || Worker::new(secrets, etx, self_tx, reply_enabled).run(rx))?;
     Ok((SyncHandle { tx }, erx))
 }
 
@@ -148,6 +175,11 @@ impl std::fmt::Display for CallError {
 struct Access {
     token: String,
     expires: Instant,
+}
+
+enum SignInPurpose {
+    AddAccount,
+    EnableRsvp(String),
 }
 
 struct Account {
@@ -181,7 +213,9 @@ struct Worker {
     last_refresh: Option<Instant>,
     retry_at: Option<Instant>,
     sign_in: Option<PendingSignIn>,
+    sign_in_purpose: Option<SignInPurpose>,
     sign_in_seq: u64,
+    reply_enabled: BTreeSet<String>,
     auth: AuthState,
     /// The last keyring read failed (locked, no Secret Service); retried on Refresh.
     keyring_failed: bool,
@@ -195,6 +229,7 @@ impl Worker {
         secrets: Secrets,
         events: async_channel::Sender<SyncEvent>,
         self_tx: mpsc::Sender<Command>,
+        reply_enabled: BTreeSet<String>,
     ) -> Self {
         Self {
             secrets,
@@ -208,7 +243,9 @@ impl Worker {
             last_refresh: None,
             retry_at: None,
             sign_in: None,
+            sign_in_purpose: None,
             sign_in_seq: 0,
+            reply_enabled,
             auth: AuthState::Starting,
             keyring_failed: false,
             sticky: BTreeMap::new(),
@@ -243,6 +280,15 @@ impl Worker {
         self.emit(SyncEvent::Accounts(
             self.accounts.iter().map(|a| a.email.clone()).collect(),
         ));
+    }
+
+    fn clear_reply_access(&mut self) {
+        for email in std::mem::take(&mut self.reply_enabled) {
+            self.emit(SyncEvent::ReplyAccess {
+                email,
+                enabled: false,
+            });
+        }
     }
 
     fn emit_calendars(&self) {
@@ -339,6 +385,8 @@ impl Worker {
             }
         }
         self.accounts = accounts;
+        self.reply_enabled
+            .retain(|email| self.accounts.iter().any(|account| account.email == *email));
         self.emit_accounts();
         self.set_auth(AuthState::Ready);
         if self.migrate_legacy_token() {
@@ -449,7 +497,20 @@ impl Worker {
                     Err(e) => self.emit(SyncEvent::Problem(Some(e.to_string()))),
                 }
             }
-            Command::AddAccount => self.begin_sign_in(),
+            Command::AddAccount => self.begin_sign_in(SignInPurpose::AddAccount),
+            Command::SetReplyEnabled { email, enabled } => {
+                if enabled {
+                    self.begin_reply_sign_in(email);
+                } else {
+                    self.set_reply_enabled(&email, false);
+                }
+            }
+            Command::ReauthorizeRsvp(email) => self.begin_reply_sign_in(email),
+            Command::Reply {
+                calendar,
+                event,
+                response,
+            } => self.reply(calendar, event, response),
             Command::CancelSignIn => self.cancel_sign_in(),
             Command::SignInFinished(seq, result) => self.finish_sign_in(seq, result),
             Command::RemoveAccount(email) => {
@@ -560,10 +621,38 @@ impl Worker {
             sign_in.cancel.store(true, Ordering::Relaxed);
             self.emit(SyncEvent::SigningIn(None));
         }
+        self.sign_in_purpose = None;
     }
 
-    fn begin_sign_in(&mut self) {
-        // No client until the keyring has been read: a saved client must not be bypassed.
+    fn set_reply_enabled(&mut self, email: &str, enabled: bool) {
+        if !self.accounts.iter().any(|account| account.email == email) {
+            self.emit(SyncEvent::Problem(Some(format!(
+                "{email} is not signed in. Add the account again before changing RSVP access."
+            ))));
+            return;
+        }
+        if enabled {
+            self.begin_reply_sign_in(email.to_string());
+        } else {
+            self.reply_enabled.remove(email);
+            self.emit(SyncEvent::ReplyAccess {
+                email: email.to_string(),
+                enabled: false,
+            });
+        }
+    }
+
+    fn begin_reply_sign_in(&mut self, email: String) {
+        if !self.accounts.iter().any(|account| account.email == email) {
+            self.emit(SyncEvent::Problem(Some(format!(
+                "{email} is not signed in. Add the account again before enabling RSVP."
+            ))));
+            return;
+        }
+        self.begin_sign_in(SignInPurpose::EnableRsvp(email));
+    }
+
+    fn begin_sign_in(&mut self, purpose: SignInPurpose) {
         let Some(client) = self.client.clone() else {
             return;
         };
@@ -577,11 +666,19 @@ impl Worker {
         };
         let pkce = oauth::new_pkce();
         let state = oauth::random_token(24);
+        let (scope, login_hint) = match &purpose {
+            SignInPurpose::AddAccount => (oauth::scopes_for_reply(false), None),
+            SignInPurpose::EnableRsvp(email) => {
+                (oauth::scopes_for_reply(true), Some(email.as_str()))
+            }
+        };
         let url = oauth::authorize_url(
             &client.client_id,
             &loopback.redirect_uri,
             &pkce.challenge,
             &state,
+            scope,
+            login_hint,
         );
         self.sign_in_seq += 1;
         let seq = self.sign_in_seq;
@@ -590,6 +687,7 @@ impl Worker {
             seq,
             cancel: cancel.clone(),
         });
+        self.sign_in_purpose = Some(purpose);
         self.emit(SyncEvent::Problem(None));
         self.emit(SyncEvent::SigningIn(Some(url.clone())));
         if let Err(e) = open::that_detached(&url) {
@@ -615,6 +713,7 @@ impl Worker {
             });
         if let Err(error) = result {
             self.sign_in = None;
+            self.sign_in_purpose = None;
             self.emit(SyncEvent::SigningIn(None));
             self.emit(SyncEvent::Problem(Some(format!(
                 "Could not start the sign-in worker: {error}"
@@ -630,6 +729,10 @@ impl Worker {
             return;
         }
         self.sign_in = None;
+        let purpose = self
+            .sign_in_purpose
+            .take()
+            .unwrap_or(SignInPurpose::AddAccount);
         self.emit(SyncEvent::SigningIn(None));
         let tokens = match result {
             Ok(t) => t,
@@ -638,14 +741,6 @@ impl Worker {
                 self.emit(SyncEvent::Problem(Some(e.to_string())));
                 return;
             }
-        };
-        let Some(refresh_token) = tokens.refresh_token else {
-            self.emit(SyncEvent::Problem(Some(
-                "Google did not return a refresh token. Remove Antarctical's access at \
-                 myaccount.google.com/permissions and sign in again."
-                    .into(),
-            )));
-            return;
         };
         let email = match api::primary_email(&self.agent, &tokens.access_token) {
             Ok(email) => email,
@@ -656,40 +751,127 @@ impl Worker {
                 return;
             }
         };
-        self.sticky.remove(&email);
-        if let Err(e) = self.secrets.set_token(&email, &refresh_token) {
-            self.sticky.insert(
-                email.clone(),
-                format!("{e}. {email} is signed in for this session only."),
-            );
+        if let SignInPurpose::EnableRsvp(target) = &purpose {
+            if &email != target {
+                self.emit(SyncEvent::Problem(Some(format!(
+                    "Signed in as {email}, not {target}. RSVP access was not changed."
+                ))));
+                return;
+            }
+            if !oauth::reply_scopes_granted(tokens.scope.as_deref()) {
+                self.emit(SyncEvent::Problem(Some(format!(
+                    "Google did not grant all RSVP scopes for {email}. RSVP remains off."
+                ))));
+                return;
+            }
         }
-        self.report(&[]);
+        let Some(refresh_token) = tokens.refresh_token.clone().or_else(|| {
+            self.accounts
+                .iter()
+                .find(|account| account.email == email)
+                .map(|account| account.refresh_token.clone())
+        }) else {
+            self.emit(SyncEvent::Problem(Some(
+                "Google did not return a refresh token. Remove Antarctical's access at \
+                 myaccount.google.com/permissions and sign in again."
+                    .into(),
+            )));
+            return;
+        };
+        self.sticky.remove(&email);
         let access = Some(Access {
             token: tokens.access_token,
             expires: Instant::now() + Duration::from_secs(tokens.expires_in),
         });
-        match self.accounts.iter_mut().find(|a| a.email == email) {
-            // Signing in again with an account we have: the new token replaces the old one.
-            // The old one is not revoked: that would revoke the whole grant, new token included.
-            Some(existing) => {
-                existing.refresh_token = refresh_token;
-                existing.access = access;
-                self.emit(SyncEvent::Notice(format!("{email} signed in again")));
+        let preserve_existing_rsvp =
+            matches!(&purpose, SignInPurpose::AddAccount) && self.reply_enabled.contains(&email);
+        if preserve_existing_rsvp {
+            // The account picker may select an already-enabled account from the default
+            // read-only Add account flow. Keep its RSVP-capable token untouched.
+            self.emit(SyncEvent::Notice(format!(
+                "{email} is already signed in; its RSVP authorization was kept"
+            )));
+        } else {
+            if let Err(e) = self.secrets.set_token(&email, &refresh_token) {
+                self.sticky.insert(
+                    email.clone(),
+                    format!("{e}. {email} is signed in for this session only."),
+                );
             }
-            None => {
-                self.accounts.push(Account {
-                    email: email.clone(),
-                    refresh_token,
-                    access,
-                    calendars: vec![],
-                });
-                self.emit(SyncEvent::Notice(format!("Added {email}")));
+            match self.accounts.iter_mut().find(|a| a.email == email) {
+                // Signing in again replaces the refresh token; the old one is not revoked,
+                // because that would revoke the whole grant, including the new token.
+                Some(existing) => {
+                    existing.refresh_token = refresh_token;
+                    existing.access = access;
+                    self.emit(SyncEvent::Notice(format!("{email} signed in again")));
+                }
+                None => {
+                    self.accounts.push(Account {
+                        email: email.clone(),
+                        refresh_token,
+                        access,
+                        calendars: vec![],
+                    });
+                    self.emit(SyncEvent::Notice(format!("Added {email}")));
+                }
             }
         }
+        if matches!(&purpose, SignInPurpose::EnableRsvp(_)) {
+            self.reply_enabled.insert(email.clone());
+            self.emit(SyncEvent::ReplyAccess {
+                email: email.clone(),
+                enabled: true,
+            });
+        }
+        self.report(&[]);
         self.emit_accounts();
         // Months were fetched for the old set of accounts.
         self.fetched.clear();
         self.refresh_all();
+    }
+
+    fn reply(&mut self, calendar: Calendar, event: Box<Event>, response: Response) {
+        let event = *event;
+        let email = calendar.account.clone();
+        let (error, missing_scope) = if !self.reply_enabled.contains(&email) {
+            (
+                Some("Reply to invitations is not enabled for this account".into()),
+                false,
+            )
+        } else if !event.replyable() || event.calendar_id != calendar.id {
+            (
+                Some("This event does not have a replyable self attendee".into()),
+                false,
+            )
+        } else {
+            match self.with_token(&email, |agent, token| {
+                api::patch_response(agent, token, &calendar, &event, response)
+            }) {
+                Ok(()) => (None, false),
+                Err(CallError::Api(error)) => {
+                    let missing_scope = error.missing_scope();
+                    (Some(error.to_string()), missing_scope)
+                }
+                Err(error) => (Some(error.to_string()), false),
+            }
+        };
+        self.emit(SyncEvent::ReplyFinished {
+            calendar_id: calendar.id,
+            event_id: event.id,
+            account: email,
+            error,
+            missing_scope,
+        });
+    }
+
+    fn cancel_rsvp_sign_in_for_account(&mut self, email: &str) {
+        if matches!(
+            self.sign_in_purpose.as_ref(),
+            Some(SignInPurpose::EnableRsvp(target)) if target == email
+        ) {
+            self.cancel_sign_in();
+        }
     }
 
     /// Forgets one account. `Revoke::WithGoogle` also invalidates its refresh token with Google.
@@ -698,7 +880,14 @@ impl Worker {
         let Some(i) = self.accounts.iter().position(|a| a.email == email) else {
             return false;
         };
+        self.cancel_rsvp_sign_in_for_account(email);
         let account = self.accounts.remove(i);
+        if self.reply_enabled.remove(email) {
+            self.emit(SyncEvent::ReplyAccess {
+                email: email.to_string(),
+                enabled: false,
+            });
+        }
         if matches!(revoke, Revoke::WithGoogle)
             && !oauth::revoke(&self.agent, &account.refresh_token)
         {
@@ -727,6 +916,7 @@ impl Worker {
         for email in emails {
             self.remove_account(&email, revoke);
         }
+        self.clear_reply_access();
         if let Err(e) = self.secrets.clear_tokens() {
             self.emit(SyncEvent::Problem(Some(e.to_string())));
         }
@@ -1023,5 +1213,30 @@ mod tests {
             ]
         );
         assert!(contiguous_runs(&[]).is_empty());
+    }
+
+    #[test]
+    fn removing_an_account_cancels_its_pending_rsvp_authorization() {
+        let (events, _rx) = async_channel::unbounded();
+        let (self_tx, _commands) = mpsc::channel();
+        let mut worker = Worker::new(Secrets::memory(), events, self_tx, BTreeSet::new());
+        worker.accounts.push(Account {
+            email: "me@example.com".into(),
+            refresh_token: "refresh-token".into(),
+            access: None,
+            calendars: Vec::new(),
+        });
+        let cancelled = Arc::new(AtomicBool::new(false));
+        worker.sign_in = Some(PendingSignIn {
+            seq: 1,
+            cancel: cancelled.clone(),
+        });
+        worker.sign_in_purpose = Some(SignInPurpose::EnableRsvp("me@example.com".into()));
+
+        assert!(worker.remove_account("me@example.com", Revoke::LocalOnly));
+
+        assert!(cancelled.load(Ordering::Relaxed));
+        assert!(worker.sign_in.is_none());
+        assert!(worker.sign_in_purpose.is_none());
     }
 }
