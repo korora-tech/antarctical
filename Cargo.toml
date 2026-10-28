@@ -18,7 +18,7 @@ jiff = "0.2.38"
 ureq = { version = "=3.5.0", default-features = false, features = ["rustls", "json"] }
 url = "2.5"
 sha2 = "0.11.1"
-base64 = "0.22"
+base64 = "0.23"
 getrandom = "0.4"
 # The OAuth client (id + secret) and refresh token live in the Secret Service; never on disk.
 keyring-core = "1"
