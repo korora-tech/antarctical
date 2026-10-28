@@ -5,7 +5,8 @@ use jiff::civil::Date;
 use jiff::tz::TimeZone;
 
 use crate::config::ViewMode;
-use crate::model::{Event, When, add_days, week_start};
+use crate::model;
+use crate::model::{Event, When};
 
 pub fn time(z: &Zoned, clock_24h: bool) -> String {
     if clock_24h {
@@ -39,8 +40,8 @@ pub fn event_time_on(e: &Event, date: Date, tz: &TimeZone, clock_24h: bool) -> S
         return "All day".into();
     };
     let (s, en) = (e.start_zoned(tz), e.end_zoned(tz));
-    let ends_later =
-        en.date() > date && !(en.date() == add_days(date, 1) && en.hour() == 0 && en.minute() == 0);
+    let ends_later = en.date() > date
+        && !(en.date() == model::add_days(date, 1) && en.hour() == 0 && en.minute() == 0);
     match (s.date() < date, ends_later) {
         (false, false) => event_time(e, tz, clock_24h),
         (true, false) => format!("Until {}", time(&en, clock_24h)),
@@ -53,7 +54,7 @@ pub fn event_time_on(e: &Event, date: Date, tz: &TimeZone, clock_24h: bool) -> S
 pub fn event_when_long(e: &Event, tz: &TimeZone, clock_24h: bool) -> String {
     match e.when {
         When::AllDay { start, end } => {
-            let last = add_days(end, -1);
+            let last = model::add_days(end, -1);
             if last <= start {
                 format!("{} · All day", start.strftime("%A, %-d %B %Y"))
             } else {
@@ -67,7 +68,7 @@ pub fn event_when_long(e: &Event, tz: &TimeZone, clock_24h: bool) -> String {
         When::Timed { .. } => {
             let (s, en) = (e.start_zoned(tz), e.end_zoned(tz));
             if s.date() == en.date()
-                || (en.date() == add_days(s.date(), 1) && en.hour() == 0 && en.minute() == 0)
+                || (en.date() == model::add_days(s.date(), 1) && en.hour() == 0 && en.minute() == 0)
             {
                 format!(
                     "{} · {}",
@@ -91,8 +92,8 @@ pub fn view_title(view: ViewMode, anchor: Date) -> String {
     match view {
         ViewMode::Month => anchor.strftime("%B %Y").to_string(),
         ViewMode::Week => {
-            let start = week_start(anchor);
-            let end = add_days(start, 6);
+            let start = model::week_start(anchor);
+            let end = model::add_days(start, 6);
             if start.month() == end.month() {
                 format!("{} – {}", start.strftime("%-d"), end.strftime("%-d %B %Y"))
             } else if start.year() == end.year() {

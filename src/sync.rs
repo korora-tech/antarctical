@@ -18,7 +18,8 @@ use jiff::{Timestamp, Zoned};
 
 use crate::google::api::{self, ApiError};
 use crate::google::oauth::{self, AuthError, ClientCredentials, TokenResponse};
-use crate::model::{Calendar, Event, add_days, add_months, day_start, first_of_month};
+use crate::model;
+use crate::model::{Calendar, Event};
 use crate::secrets::{SecretError, Secrets};
 
 /// How often visible data is re-fetched while signed in.
@@ -806,8 +807,8 @@ impl Worker {
     /// The months kept fresh even when not on screen (tray agenda and reminders).
     fn core_months() -> Vec<Date> {
         let today = Zoned::now().date();
-        let m = first_of_month(today);
-        vec![add_months(m, -1), m, add_months(m, 1)]
+        let m = model::first_of_month(today);
+        vec![model::add_months(m, -1), m, model::add_months(m, 1)]
     }
 
     fn emails(&self) -> Vec<String> {
@@ -904,8 +905,9 @@ impl Worker {
             let (first, last) = (run[0], run[run.len() - 1]);
             // A day of slack each side: all-day dates are matched against local midnight,
             // which can sit up to a day away from the instants Google filters on.
-            let from = day_start(add_days(first, -1), &tz).timestamp();
-            let to = day_start(add_days(add_months(last, 1), 1), &tz).timestamp();
+            let from = model::day_start(model::add_days(first, -1), &tz).timestamp();
+            let to =
+                model::day_start(model::add_days(model::add_months(last, 1), 1), &tz).timestamp();
             let work: Vec<(String, Calendar)> = self
                 .accounts
                 .iter()
@@ -936,8 +938,8 @@ impl Worker {
                     }
                 };
                 for &month in &run {
-                    let m_from = day_start(month, &tz).timestamp();
-                    let m_to = day_start(add_months(month, 1), &tz).timestamp();
+                    let m_from = model::day_start(month, &tz).timestamp();
+                    let m_to = model::day_start(model::add_months(month, 1), &tz).timestamp();
                     let in_month = events
                         .iter()
                         .filter(|e| {
@@ -982,7 +984,13 @@ fn contiguous_runs(months: &[Date]) -> Vec<Vec<Date>> {
     let mut runs: Vec<Vec<Date>> = vec![];
     for m in sorted {
         match runs.last_mut() {
-            Some(run) if run.last().is_some_and(|last| add_months(*last, 1) == m) => run.push(m),
+            Some(run)
+                if run
+                    .last()
+                    .is_some_and(|last| model::add_months(*last, 1) == m) =>
+            {
+                run.push(m)
+            }
             _ => runs.push(vec![m]),
         }
     }

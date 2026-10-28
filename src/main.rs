@@ -138,7 +138,7 @@ fn main() {
                 }
             };
             let has_tray = tray.is_some();
-            let tray_window: ui::TrayWindow = Rc::new(RefCell::new(None));
+            let tray_window: ui::tray_view::TrayWindow = Rc::new(RefCell::new(None));
 
             // Tray menu → app.
             {
@@ -148,11 +148,11 @@ fn main() {
                     while let Ok(action) = tray_rx.recv().await {
                         cx.update(|cx| match action {
                             TrayAction::TogglePopover { x, y } => {
-                                ui::toggle_tray_window(&store, &tray_window, Some((x, y)), cx)
+                                ui::tray_view::toggle(&store, &tray_window, Some((x, y)), cx)
                             }
                             TrayAction::OpenMain => {
-                                ui::close_tray_window(&store, &tray_window, cx);
-                                ui::show_main_window(&store, cx);
+                                ui::tray_view::close(&store, &tray_window, cx);
+                                ui::windows::show_main_window(&store, cx);
                             }
                             TrayAction::Refresh => store.read(cx).send(Command::Refresh),
                             TrayAction::Quit => cx.quit(),
@@ -168,7 +168,7 @@ fn main() {
                 cx.spawn(async move |cx| {
                     while let Ok(action) = shell_rx.recv().await {
                         cx.update(|cx| match action {
-                            ShellAction::Show => ui::show_main_window(&store, cx),
+                            ShellAction::Show => ui::windows::show_main_window(&store, cx),
                         });
                     }
                 })
@@ -212,7 +212,7 @@ fn main() {
             }
 
             if !(hidden && has_tray) {
-                ui::show_main_window(&store, cx);
+                ui::windows::show_main_window(&store, cx);
             }
         });
 }

@@ -7,7 +7,8 @@ use jiff::civil::{Date, Weekday};
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, ToSpan, Zoned};
 
-use crate::model::{Attendee, Calendar, Event, Response, When, add_days, add_months};
+use crate::model;
+use crate::model::{Attendee, Calendar, Event, Response, When};
 use crate::sync::{AuthState, Command, SyncEvent, SyncHandle};
 
 pub fn start() -> std::io::Result<(SyncHandle, async_channel::Receiver<SyncEvent>)> {
@@ -45,7 +46,7 @@ fn run(rx: mpsc::Receiver<Command>, tx: async_channel::Sender<SyncEvent>) {
         emit(SyncEvent::Synced(Timestamp::now()));
     };
     let m = today.first_of_month();
-    send_months(&[add_months(m, -1), m, add_months(m, 1)]);
+    send_months(&[model::add_months(m, -1), m, model::add_months(m, 1)]);
     while let Ok(cmd) = rx.recv() {
         match cmd {
             Command::Want(_, months) => send_months(&months),
@@ -128,7 +129,7 @@ fn events_for(cal: &Calendar, month: Date, today: Date, tz: &TimeZone) -> Vec<Ev
         start: at(d, h1, m1, tz),
         end: at(d, h2, m2, tz),
     };
-    let days = (0..month.days_in_month()).map(|i| add_days(month, i as i32));
+    let days = (0..month.days_in_month()).map(|i| model::add_days(month, i as i32));
     for d in days {
         let key = d.to_string();
         let wd = d.weekday();
@@ -216,7 +217,7 @@ fn events_for(cal: &Calendar, month: Date, today: Date, tz: &TimeZone) -> Vec<Ev
                         "Team offsite",
                         When::AllDay {
                             start: d,
-                            end: add_days(d, 3),
+                            end: model::add_days(d, 3),
                         },
                     );
                     e.location = Some("Lisbon".into());
@@ -253,7 +254,7 @@ fn events_for(cal: &Calendar, month: Date, today: Date, tz: &TimeZone) -> Vec<Ev
                     "First of the month",
                     When::AllDay {
                         start: d,
-                        end: add_days(d, 1),
+                        end: model::add_days(d, 1),
                     },
                 );
                 e.reminders = vec![];
@@ -264,13 +265,13 @@ fn events_for(cal: &Calendar, month: Date, today: Date, tz: &TimeZone) -> Vec<Ev
     }
     // Multi-month events must be present in every month they touch.
     if cal.remote_id == PERSONAL {
-        let start = add_days(month, -3);
+        let start = model::add_days(month, -3);
         let mut e = base(
             format!("trip-{month}"),
             "Trip",
             When::AllDay {
                 start,
-                end: add_days(month, 2),
+                end: model::add_days(month, 2),
             },
         );
         e.reminders = vec![];

@@ -6,22 +6,25 @@ use std::time::Duration;
 
 #[cfg(target_os = "linux")]
 use gpui::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
+use gpui::prelude::*;
 use gpui::{
     App, AppContext, Bounds, Context, Entity, FocusHandle, FontWeight, PlatformDisplay, Render,
     ScrollHandle, SharedString, Stateful, Subscription, Task, Window, WindowBackgroundAppearance,
-    WindowBounds, WindowDecorations, WindowHandle, WindowKind, div, point, prelude::*, px, rgb,
-    size,
+    WindowBounds, WindowDecorations, WindowHandle, WindowKind, div, point, px, rgb, size,
 };
 use jiff::Zoned;
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
 
+use super::Back;
 use super::format;
-use super::theme::*;
+use super::theme::{
+    ACCENT, ACCENT_TEXT, BG, BORDER, CAPTION, HOVER, MUTED, PANEL, SECONDARY, SELECTED, TEXT,
+};
 use super::widgets::{ButtonStyle, button, ghost_button};
-use super::{Back, show_main_window_at};
+use super::windows;
 use crate::branding;
-use crate::model::{add_days, months_between, week_start};
+use crate::model;
 use crate::store::Store;
 use crate::sync::{Command, ViewId};
 
@@ -29,7 +32,7 @@ const POPOVER_WIDTH: f32 = 368.0;
 const POPOVER_HEIGHT: f32 = 640.0;
 
 fn week_title(week: Date) -> String {
-    let last_day = add_days(week, 6);
+    let last_day = model::add_days(week, 6);
     if week.year() == last_day.year() && week.month() == last_day.month() {
         format!(
             "{}–{} {}",
@@ -81,7 +84,7 @@ impl TrayPopoverView {
         });
         let view = Self {
             store,
-            week: week_start(today),
+            week: model::week_start(today),
             selected: today,
             focus: cx.focus_handle(),
             agenda_scroll: ScrollHandle::new(),
@@ -95,21 +98,21 @@ impl TrayPopoverView {
     fn request_week(&self, cx: &Context<Self>) {
         self.store.read(cx).send(Command::Want(
             ViewId::Tray,
-            months_between(self.week, add_days(self.week, 7)),
+            model::months_between(self.week, model::add_days(self.week, 7)),
         ));
     }
 
     fn move_week(&mut self, delta: i32, cx: &mut Context<Self>) {
         let weekday_offset = self.selected.weekday().to_monday_zero_offset() as i32;
-        self.week = add_days(self.week, delta * 7);
-        self.selected = add_days(self.week, weekday_offset);
+        self.week = model::add_days(self.week, delta * 7);
+        self.selected = model::add_days(self.week, weekday_offset);
         self.agenda_scroll.set_offset(point(px(0.0), px(0.0)));
         self.request_week(cx);
         cx.notify();
     }
 
     fn select_date(&mut self, date: Date, cx: &mut Context<Self>) {
-        self.week = week_start(date);
+        self.week = model::week_start(date);
         self.selected = date;
         self.agenda_scroll.set_offset(point(px(0.0), px(0.0)));
         self.request_week(cx);
@@ -117,15 +120,17 @@ impl TrayPopoverView {
     }
 
     fn open_full(&self, date: Date, window: &mut Window, cx: &mut Context<Self>) {
-        show_main_window_at(&self.store, date, cx);
+        windows::show_main_window_at(&self.store, date, cx);
         window.remove_window();
     }
 
     fn week_strip(&self, store: &Store, cx: &Context<Self>) -> gpui::Div {
         let today = Zoned::now().date();
-        let dates: Vec<_> = (0..7).map(|offset| add_days(self.week, offset)).collect();
+        let dates: Vec<_> = (0..7)
+            .map(|offset| model::add_days(self.week, offset))
+            .collect();
         let tz = TimeZone::system();
-        let events = store.events_between(self.week, add_days(self.week, 7), &tz);
+        let events = store.events_between(self.week, model::add_days(self.week, 7), &tz);
 
         div()
             .flex()
@@ -209,7 +214,7 @@ impl TrayPopoverView {
     ) -> gpui::Div {
         let title = if date == today {
             "TODAY".to_string()
-        } else if date == add_days(today, 1) {
+        } else if date == model::add_days(today, 1) {
             "TOMORROW".to_string()
         } else {
             date.strftime("%A").to_string().to_uppercase()
@@ -348,7 +353,7 @@ impl TrayPopoverView {
         let today = Zoned::now().date();
         let tz = TimeZone::system();
         let range_start = self.selected;
-        let range_end = add_days(range_start, 2);
+        let range_end = model::add_days(range_start, 2);
         let has_loaded_range = !store.events_between(range_start, range_end, &tz).is_empty();
         let no_calendars = store.calendars.is_empty();
         let mut body = div().flex().flex_col().gap_4().px_4().py_3();
@@ -397,7 +402,7 @@ impl TrayPopoverView {
         } else {
             body = body
                 .child(self.day_section(store, self.selected, today, &tz, cx))
-                .child(self.day_section(store, add_days(self.selected, 1), today, &tz, cx));
+                .child(self.day_section(store, model::add_days(self.selected, 1), today, &tz, cx));
         }
 
         div()
