@@ -29,7 +29,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::model::{Calendar, Event, Response, When, add_days, months_between};
-use crate::store::Store;
+use crate::store::{Mode, Store};
 use crate::sync::{Command, SyncHandle, ViewId};
 
 /// Longest request line accepted; Dux's requests are a few hundred bytes.
@@ -197,7 +197,9 @@ pub fn snapshot(store: &Store, tz: &TimeZone) -> Snapshot {
 }
 
 fn wire_event(cal: &Calendar, e: &Event, calendar_id: String, tz: &TimeZone) -> WireEvent {
-    let (from, to) = e.instants(tz);
+    let span = e.instants(tz);
+    let from = utc(span.start);
+    let to = utc(span.end);
     let (start, end, all_day) = match e.when {
         When::Timed { start, end } => (utc(start), utc(end.max(start)), false),
         When::AllDay { start, end } => {
@@ -921,7 +923,7 @@ mod tests {
             ephemeral: true,
             ..Prefs::default()
         };
-        let mut s = Store::new(SyncHandle::from_sender(tx), true, prefs);
+        let mut s = Store::new(SyncHandle::from_sender(tx), Mode::Demo, prefs);
         let work = calendar("me@x", "work", true);
         let side = calendar("me@x", "side", false);
         s.apply(SyncEvent::Calendars(vec![work.clone(), side.clone()]));
