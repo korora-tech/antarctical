@@ -1,13 +1,34 @@
 ---
 import Page from "../layouts/Page.astro";
 import penguin from "../../../data/branding/antarctical-penguin.svg?url";
+import week from "../assets/screenshots/demo-week.webp";
+import month from "../assets/screenshots/demo-month.webp";
+import day from "../assets/screenshots/demo-day.webp";
+import agenda from "../assets/screenshots/demo-agenda.webp";
 
 const repository = "https://github.com/korora-tech/antarctical";
+const views = [
+  { id: "week", label: "Week", image: week, title: "See how your week fits together.", description: "Bring your calendars together in a time grid, with overlapping events arranged side by side.", alt: "Antarctical demo mode showing a week of colour-coded personal and work events." },
+  { id: "month", label: "Month", image: month, title: "Take the longer view.", description: "Scan the month, spot busy days, and choose a date to see what is planned.", alt: "Antarctical demo mode showing the month grid and calendars from two generated Google accounts." },
+  { id: "day", label: "Day", image: day, title: "Make space for your day.", description: "Focus on one day's schedule and open a meeting to see its time, location and description.", alt: "Antarctical demo mode showing a day's events with the details panel open for a design review." },
+  { id: "agenda", label: "Agenda", image: agenda, title: "Know what is coming up.", description: "Read upcoming events as a simple list, grouped by day and marked with their calendar colours.", alt: "Antarctical demo mode showing upcoming events in a list grouped by date." },
+];
+const features = [
+  { label: "ACCOUNTS", title: "Personal and work, together", description: "Connect multiple Google accounts. See their calendars side by side and choose which ones appear with the sidebar checkboxes." },
+  { label: "VIEWS", title: "Four ways to see your day", description: "Switch between month, week, day and agenda views. Jump to a date from the month grid or the sidebar's mini calendar." },
+  { label: "SYSTEM TRAY", title: "A penguin, always", description: "The tray icon stays a penguin, with no changing date badge. Click it for a compact calendar and agenda, then open the full app at the day you choose." },
+  { label: "REMINDERS", title: "Be there on time", description: "Google Calendar reminders become native desktop notifications. Hidden calendars and declined events never send reminders." },
+  { label: "EVENT DETAILS", title: "Everything for your next meeting", description: "See the time, location, guests and description. Join the video call or open the event in Google Calendar directly from its details." },
+  { label: "KEYBOARD", title: "Keep your hands on the keys", description: "Press T for today, M / W / D / A to switch views, and the arrow keys to move through dates. Ctrl+R refreshes your calendars." },
+  { label: "SYNC", title: "Your plans stay current", description: "Calendars refresh every five minutes, with manual refresh whenever you need it. Recurring events are expanded, and temporary network failures retry automatically." },
+  { label: "PRIVACY", title: "Your calendar stays yours", description: "Antarctical connects directly to Google. Credentials live in your system keyring, calendar data stays in memory, and the app has no analytics or telemetry." },
+  { label: "LINUX", title: "At home on your desktop", description: "A native GPUI app for Wayland and X11, with Nix and Home Manager support. Dux integration adds your calendars and a next-event widget to the shell." },
+];
 ---
 
 <Page
   title="Antarctical"
-  description="A native Google Calendar app for the Linux desktop. Your accounts, agenda and reminders, at home on Linux."
+  description="A native Google Calendar app for Linux. See real app screenshots, explore its features, and try demo mode without signing in."
   home
 >
   <section class="hero" aria-labelledby="hero-title">
@@ -19,8 +40,8 @@ const repository = "https://github.com/korora-tech/antarctical";
         Google accounts together, see what’s next, and keep your day close at hand.
       </p>
       <div class="actions">
-        <a class="button primary" href={`${repository}#run`}>Get Antarctical <span aria-hidden="true">↗</span></a>
-        <a class="button secondary" href={repository}>Explore the source</a>
+        <a class="button primary" href="#try-it">Try Antarctical <span aria-hidden="true">↗</span></a>
+        <a class="button secondary" href="#screenshots">See the app</a>
       </div>
       <p class="platforms">Made for Linux · Wayland and X11 · Open source</p>
     </div>
@@ -35,31 +56,56 @@ const repository = "https://github.com/korora-tech/antarctical";
     </div>
   </section>
 
-  <section class="features" aria-label="Calendar features">
-    <article>
-      <p class="feature-label">YOUR CALENDARS</p>
-      <h2>One place for your plans.</h2>
-      <p>
-        See calendars from one or more Google accounts together. Switch between
-        month, week, day and agenda views to find the perspective you need.
-      </p>
-    </article>
-    <article>
-      <p class="feature-label">CLOSE AT HAND</p>
-      <h2>A penguin in your tray.</h2>
-      <p>
-        Click the penguin for your agenda, jump into the full calendar, and get
-        desktop notifications when it’s time for your next event.
-      </p>
-    </article>
-    <article>
-      <p class="feature-label">ON YOUR COMPUTER</p>
-      <h2>Your day stays yours.</h2>
-      <p>
-        Antarctical talks to Google directly. Your calendar data never passes
-        through our servers, and there’s no analytics or telemetry.
-      </p>
-    </article>
+  <section id="screenshots" class="showcase" aria-labelledby="screenshots-title">
+    <div class="section-heading">
+      <p class="eyebrow">SEE IT IN ACTION</p>
+      <h2 id="screenshots-title">Your calendar, from every angle.</h2>
+      <p>Real app screenshots, captured in demo mode with generated accounts and events.</p>
+    </div>
+    <div data-view-picker>
+      <div class="view-tabs" role="tablist" aria-label="Calendar screenshot view">
+        {views.map((view, index) => (
+          <button type="button" role="tab" id={`tab-${view.id}`} aria-controls={`panel-${view.id}`} aria-selected={index === 0 ? "true" : "false"} tabindex={index === 0 ? 0 : -1}>{view.label}</button>
+        ))}
+      </div>
+      {views.map((view, index) => (
+        <figure class="demo-panel" id={`panel-${view.id}`} role="tabpanel" aria-labelledby={`tab-${view.id}`} tabindex="0" hidden={index !== 0} data-demo-panel>
+          <a class="screenshot-link" href={view.image.src} target="_blank" rel="noopener" aria-label={`Open the ${view.label.toLowerCase()} screenshot at full size`}>
+            <img src={view.image.src} alt={view.alt} width={view.image.width} height={view.image.height} loading={index === 0 ? "eager" : "lazy"} decoding="async" />
+          </a>
+          <figcaption>
+            <div><h3>{view.title}</h3><p>{view.description}</p></div>
+            <a href={view.image.src} target="_blank" rel="noopener">View full size <span aria-hidden="true">↗</span></a>
+          </figcaption>
+        </figure>
+      ))}
+    </div>
+    <noscript><p>Open a full-size screenshot: {views.map((view, index) => <>{index > 0 && " · "}<a href={view.image.src}>{view.label}</a></>)}</p></noscript>
+  </section>
+
+  <section id="features" class="features" aria-labelledby="features-title">
+    <div class="section-heading">
+      <p class="eyebrow">THE DETAILS THAT MATTER</p>
+      <h2 id="features-title">Built for your everyday calendar.</h2>
+      <p>From the first meeting to the last reminder, with the controls you expect on Linux.</p>
+    </div>
+    <ul class="feature-grid">
+      {features.map((feature) => <li><p class="feature-label">{feature.label}</p><h3>{feature.title}</h3><p>{feature.description}</p></li>)}
+    </ul>
+    <p class="availability"><strong>A calendar viewer, for now.</strong>{" "}Creating and editing events is not yet available in Antarctical. Open an event in Google Calendar when you need to make a change.</p>
+  </section>
+
+  <section id="try-it" class="try-demo" aria-labelledby="try-title">
+    <div>
+      <p class="eyebrow">MEET YOUR NEXT CALENDAR</p>
+      <h2 id="try-title">Take it for a spin.</h2>
+      <p>Try all four views with generated calendars. Demo mode needs no Google account and does not save your preferences.</p>
+    </div>
+    <div class="demo-command">
+      <p class="command-label">Run with Nix</p>
+      <pre><code>nix run github:korora-tech/antarctical -- --demo</code></pre>
+      <p><a href={`${repository}#run`}>Installation and setup</a>{" "}·{" "}<a href={repository}>Explore the source</a></p>
+    </div>
   </section>
 
   <aside class="privacy-note">
@@ -70,6 +116,29 @@ const repository = "https://github.com/korora-tech/antarctical";
     </p>
   </aside>
 </Page>
+
+<script>
+  for (const picker of document.querySelectorAll<HTMLElement>("[data-view-picker]")) {
+    const tabs = [...picker.querySelectorAll<HTMLButtonElement>("[role=tab]")];
+    const panels = [...picker.querySelectorAll<HTMLElement>("[data-demo-panel]")];
+    const select = (index: number) => {
+      tabs.forEach((tab, i) => { tab.setAttribute("aria-selected", String(i === index)); tab.tabIndex = i === index ? 0 : -1; });
+      panels.forEach((panel, i) => { panel.hidden = i !== index; });
+    };
+    tabs.forEach((tab, index) => {
+      tab.addEventListener("click", () => select(index));
+      tab.addEventListener("keydown", (event) => {
+        let next: number;
+        if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
+        else if (event.key === "ArrowLeft") next = (index - 1 + tabs.length) % tabs.length;
+        else if (event.key === "Home") next = 0;
+        else if (event.key === "End") next = tabs.length - 1;
+        else return;
+        event.preventDefault(); select(next); tabs[next].focus();
+      });
+    });
+  }
+</script>
 
 <style>
   .hero {
@@ -150,13 +219,10 @@ const repository = "https://github.com/korora-tech/antarctical";
   .mascot img {
     display: block;
     width: 100%;
-    max-width: 28rem;
+    max-width: 22rem;
     height: auto;
   }
   .features {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 2rem;
     border-top: 1px solid var(--border);
     padding: 2.5rem 0;
   }
@@ -164,12 +230,12 @@ const repository = "https://github.com/korora-tech/antarctical";
     font-size: 0.7rem;
     margin: 0 0 0.75rem;
   }
-  .features h2 {
+  .feature-grid h3 {
     font-size: 1.2rem;
     line-height: 1.35;
     margin: 0 0 0.75rem;
   }
-  .features article > p:last-child {
+  .feature-grid li > p:last-child {
     color: var(--muted);
     font-size: 0.95rem;
     margin: 0;
@@ -184,6 +250,35 @@ const repository = "https://github.com/korora-tech/antarctical";
   .privacy-note p {
     margin: 0;
   }
+  section[id] { scroll-margin-top: 2rem; }
+  .section-heading { max-width: 45rem; margin-bottom: 1.5rem; }
+  .section-heading h2, .try-demo h2 { font-size: clamp(1.65rem, 3vw, 2.2rem); letter-spacing: -0.035em; line-height: 1.2; margin: 0 0 0.75rem; }
+  .section-heading > p:last-child { color: var(--muted); margin: 0; }
+  .showcase { padding: 2.5rem 0 3.5rem; border-top: 1px solid var(--border); }
+  .view-tabs { display: inline-flex; gap: 0.25rem; padding: 0.3rem; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); margin-bottom: 1.25rem; }
+  .view-tabs button { font: inherit; font-size: 0.9rem; font-weight: 600; color: var(--muted); background: transparent; border: 0; border-radius: 8px; padding: 0.5rem 1.2rem; min-height: 44px; cursor: pointer; }
+  .view-tabs button[aria-selected="true"] { background: var(--button-bg); color: var(--button-text); }
+  .view-tabs button:hover:not([aria-selected="true"]) { color: var(--text); background: var(--bg); }
+  .view-tabs button:focus-visible, .demo-panel:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+  .demo-panel { margin: 0; }
+  .screenshot-link { display: block; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: #11131b; box-shadow: 0 18px 50px -25px #102f4c66; }
+  .screenshot-link img { display: block; width: 100%; height: auto; }
+  figcaption { display: flex; align-items: baseline; justify-content: space-between; gap: 1.5rem; padding-top: 1.25rem; }
+  figcaption h3 { font-size: 1.05rem; margin: 0 0 0.25rem; }
+  figcaption p { color: var(--muted); font-size: 0.9rem; margin: 0; }
+  figcaption > a { white-space: nowrap; font-size: 0.85rem; }
+  .feature-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); list-style: none; margin: 2rem 0; padding: 0; gap: 0 2.5rem; }
+  .feature-grid li { margin: 0; padding: 1.75rem 0; border-top: 1px solid var(--border); }
+  .availability { margin: 0; padding: 1rem 1.25rem; border-left: 3px solid var(--accent); background: var(--surface); font-size: 0.92rem; color: var(--muted); }
+  .availability strong { color: var(--text); }
+  .try-demo { display: grid; grid-template-columns: 1fr 1.15fr; align-items: center; gap: 2rem; padding: 2rem; margin: 0 0 2rem; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); }
+  .try-demo p { color: var(--muted); margin-bottom: 0; font-size: 0.95rem; }
+  .try-demo .eyebrow { color: var(--accent); margin-bottom: 1rem; font-size: 0.7rem; }
+  .demo-command { min-width: 0; }
+  .command-label { font-size: 0.75rem !important; font-weight: 650; margin-top: 0; }
+  pre { max-width: 100%; overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; padding: 1rem; background: var(--bg); font-size: 0.8rem; }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  @media (max-width: 900px) { .feature-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .try-demo { grid-template-columns: 1fr; gap: 1.5rem; } }
   @media (max-width: 760px) {
     .hero {
       grid-template-columns: 1fr;
@@ -197,9 +292,14 @@ const repository = "https://github.com/korora-tech/antarctical";
       max-width: 18rem;
     }
     .features {
-      grid-template-columns: 1fr;
-      gap: 2rem;
       padding: 2rem 0;
     }
+    .showcase { padding: 2rem 0; }
+    figcaption { flex-direction: column; gap: 0.5rem; }
+    .feature-grid { grid-template-columns: 1fr; margin: 1.5rem 0; }
+    .feature-grid li { padding: 1.4rem 0; }
+    .try-demo { padding: 1.25rem; }
+    .view-tabs { width: 100%; }
+    .view-tabs button { flex: 1; padding: 0.5rem 0.6rem; }
   }
 </style>

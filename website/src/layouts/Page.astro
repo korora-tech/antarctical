@@ -30,6 +30,8 @@ const fullTitle = title === "Antarctical" ? title : `${title} · Antarctical`;
         Antarctical
       </a>
       <nav aria-label="Main navigation">
+        <a href="/#screenshots">Screenshots</a>
+        <a href="/#features">Features</a>
         <a href="/privacy-policy">Privacy</a>
         <a href="/terms-of-service">Terms</a>
       </nav>
@@ -119,6 +121,7 @@ const fullTitle = title === "Antarctical" ? title : `${title} · Antarctical`;
   }
   nav {
     display: flex;
+    flex-wrap: wrap;
     gap: 1.25rem;
   }
   nav a {
