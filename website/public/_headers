@@ -1,0 +1,5 @@
+# Keep the website's no-analytics promise even when the Cloudflare zone
+# automatically injects Web Analytics. Preserve normal browser revalidation.
+# https://developers.cloudflare.com/web-analytics/faq/
+/*
+  Cache-Control: public, max-age=0, must-revalidate, no-transform
