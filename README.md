@@ -1,6 +1,6 @@
 # Antarctical
 
-A native Google Calendar viewer for Linux, built with GPUI. Antarctical shows the calendars of one or more Google accounts in month, week, day and agenda views. It puts today's date and agenda in the system tray and shows desktop notifications for event reminders. Antarctical only reads your calendars today, but it asks Google for full calendar access ahead of event editing.
+A native Google Calendar viewer for Linux, built with GPUI. Antarctical shows the calendars of one or more Google accounts in month, week, day and agenda views. Its penguin tray icon opens today's agenda, and it shows desktop notifications for event reminders. Antarctical only reads your calendars today, but it asks Google for full calendar access ahead of event editing.
 
 Antarctical connects to Google with its own built-in OAuth client, or with one that **you** own if you prefer. Each account's refresh token, and your own client ID and secret if you save one, are stored only in your system keyring (the freedesktop Secret Service: GNOME Keyring, KWallet, KeePassXC…). Calendar data is kept in memory.
 
@@ -63,7 +63,7 @@ Preferences that are not secret (visible calendars, view, reminders, 24-hour clo
 | `ctrl-q` | Quit |
 
 - **Details:** click an event to see its time, place, guests and description. From there you can join its video call or open it in Google Calendar.
-- **Tray:** click the date icon for a compact month and agenda window. Choose a day there and open the full calendar at that date; use the tray menu to open the full calendar directly.
+- **Tray:** click the penguin icon for a compact calendar and agenda window. The icon stays the same as the date changes; today's date appears in its tooltip and menu. Choose a day there and open the full calendar at that date; use the tray menu to open the full calendar directly.
 - **Navigation:** click a day in the month grid or in the sidebar's mini calendar to open it.
 - **Calendar visibility:** checkboxes in the sidebar hide or show calendars. Until you toggle one, each calendar follows Google's own "show in list" setting.
 - **Declined events:** hidden by default: in the views, the tray window, the tray menu's agenda and the Dux socket. Settings → Preferences → **Show events I declined** shows them greyed and struck through in the views and the tray window (the tray menu's agenda keeps skipping them). They never send reminders.
@@ -141,7 +141,8 @@ nix flake check                                        # Home Manager module eva
 | `src/sync.rs` | Sync worker thread: credentials, fetching, retries |
 | `src/demo.rs` | `--demo` worker with generated data |
 | `src/store.rs` | UI state built from sync events |
-| `src/tray.rs` | StatusNotifierItem tray and its date icon |
+| `src/tray.rs` | StatusNotifierItem tray and its fixed penguin icon |
+| `src/branding.rs`, `data/branding/` | Embedded app artwork and shared website assets |
 | `src/dankcal.rs` | dankcal socket for Dux; single-instance hand-off |
 | `src/reminders.rs` | When reminders are due |
 | `src/layout.rs` | Side-by-side placement of overlapping events |

@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none" role="img" aria-labelledby="title description">
+  <title id="title">Antarctical compact app icon</title>
+  <desc id="description">A smiling icy blue penguin holding a calendar clipboard, with closed eyes, faceted flippers and a curled page. Editable vector artwork with a transparent background.</desc>
+
+  <g id="penguin-body">
+<path d="M256 40C190 40 148 92 139 164C134 209 119 240 115 295C109 370 132 430 168 452C202 471 311 471 346 452C382 430 405 368 397 295C393 240 378 209 373 164C364 92 322 40 256 40Z" fill="#284f73"/><path d="M256 219C203 214 159 250 145 309C132 366 146 424 177 449C211 474 301 474 335 449C366 424 380 366 367 309C353 250 309 214 256 219Z" fill="#dbeaf3"/>
+</g><g id="smiling-face">
+
+      <path d="M256 168C241 154 242 111 211 103C184 96 161 117 154 146C141 189 163 224 194 243C214 256 238 259 256 260C274 259 298 256 318 243C349 224 371 189 358 146C351 117 328 96 301 103C270 111 271 154 256 168Z" fill="#f3f9fc"/>
+      <g fill="none" stroke="#193b5b" stroke-width="11" stroke-linecap="round">
+        <path d="M180 155C184 139 201 139 208 155"/>
+        <path d="M304 155C308 139 325 139 332 155"/>
+      </g>
+      <path d="M219 178L256 157L293 178C281 191 270 207 256 208C242 207 231 191 219 178Z" fill="#1d4163"/>
+      <path d="M227 178L256 164L285 178L256 189Z" fill="#b6d9ed"/>
+      <path d="M229 183L256 195L283 183C273 193 265 201 256 201C247 201 239 193 229 183Z" fill="#92b9d2"/>
+
+
+</g><g id="calendar">
+
+      <path d="M166 251H346Q363 251 363 268V458Q363 475 346 475H166Q149 475 149 458V268Q149 251 166 251Z" fill="#244a6d"/>
+
+      <path d="M169 279H343V401C341 423 319 452 286 456H169Z" fill="#f8fcff"/>
+      <path d="M169 279H343V302H169Z" fill="#c8deec"/>
+      <path d="M169 300H343" fill="none" stroke="#abc9dc" stroke-width="2"/>
+      <g id="calendar-days"><rect x="189" y="317" width="48" height="48" rx="6" fill="#bdd6e5"/><rect x="258" y="317" width="48" height="48" rx="6" fill="#529abb"/><rect x="189" y="382" width="48" height="48" rx="6" fill="#bdd6e5"/><rect x="258" y="382" width="48" height="48" rx="6" fill="#bdd6e5"/></g>
+    <path d="M286 456C309 443 311 426 313 413C323 417 334 411 343 401C341 428 318 453 286 456Z" fill="#b0ccde"/>
+      <g id="calendar-clip">
+        <path d="M214 247H235C235 235 244 226 256 226C268 226 277 235 277 247H298Q308 247 308 257V271Q308 281 298 281H214Q204 281 204 271V257Q204 247 214 247Z" fill="#173b5c" opacity=".2" transform="translate(0 3)"/>
+        <path d="M214 244H235C235 232 244 223 256 223C268 223 277 232 277 244H298Q308 244 308 254V268Q308 278 298 278H214Q204 278 204 268V254Q204 244 214 244Z" fill="#d5e8f3" stroke="#345a7b" stroke-width="6" stroke-linejoin="round"/>
+        <circle cx="256" cy="242" r="6" fill="#527b9a"/>
+
+      </g>
+
+</g><g id="flippers">
+<g id="left-flipper">
+<path d="M138 209C118 226 87 266 81 300C74 329 88 354 117 368C140 378 168 377 188 366C195 360 180 349 162 338C142 325 125 308 119 286C113 261 123 233 138 209Z" fill="#527d9f"/>
+</g><g id="right-flipper" transform="translate(512 0) scale(-1 1)"><path d="M138 209C118 226 87 266 81 300C74 329 88 354 117 368C140 378 168 377 188 366C195 360 180 349 162 338C142 325 125 308 119 286C113 261 123 233 138 209Z" fill="#527d9f"/></g>
+</g>
+</svg>

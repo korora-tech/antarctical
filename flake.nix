@@ -72,6 +72,8 @@
 
           postInstall = ''
             install -Dm644 data/korora.tech.Antarctical.desktop $out/share/applications/korora.tech.Antarctical.desktop
+            install -Dm644 data/branding/antarctical-app-icon.svg $out/share/icons/hicolor/scalable/apps/korora.tech.Antarctical.svg
+            install -Dm644 data/branding/antarctical-app-icon.png $out/share/icons/hicolor/512x512/apps/korora.tech.Antarctical.png
           '';
 
           postFixup = ''

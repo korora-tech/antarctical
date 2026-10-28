@@ -184,6 +184,7 @@ dependencies = [
  "getrandom 0.3.4",
  "gpui",
  "gpui_platform",
+ "image",
  "jiff",
  "keyring-core",
  "ksni",

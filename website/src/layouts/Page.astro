@@ -1,11 +1,14 @@
 ---
+import appIcon from "../../../data/branding/antarctical-app-icon.svg?url";
+
 interface Props {
   title: string;
   description: string;
   updated?: string;
+  home?: boolean;
 }
 
-const { title, description, updated } = Astro.props;
+const { title, description, updated, home = false } = Astro.props;
 const fullTitle = title === "Antarctical" ? title : `${title} · Antarctical`;
 ---
 
@@ -16,28 +19,29 @@ const fullTitle = title === "Antarctical" ? title : `${title} · Antarctical`;
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{fullTitle}</title>
     <meta name="description" content={description} />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/svg+xml" href={appIcon} />
     <link rel="canonical" href={new URL(Astro.url.pathname, Astro.site)} />
   </head>
-  <body>
+  <body class:list={[{ home }]}>
+    <a class="skip-link" href="#main">Skip to content</a>
     <header>
       <a class="brand" href="/">
-        <img src="/favicon.svg" alt="" width="24" height="24" />
+        <img src={appIcon} alt="" width="40" height="40" />
         Antarctical
       </a>
-      <nav>
+      <nav aria-label="Main navigation">
         <a href="/privacy-policy">Privacy</a>
         <a href="/terms-of-service">Terms</a>
       </nav>
     </header>
-    <main>
-      <h1>{title === "Antarctical" ? "Antarctical" : title}</h1>
+    <main id="main">
+      {!home && <h1>{title}</h1>}
       {updated && <p class="updated">Last updated {updated}</p>}
       <slot />
     </main>
     <footer>
       <p>
-        Antarctical is made by P4X-639 Ltd, trading as Rawkode Academy ·
+        Antarctical is made by P4X-639 Ltd, trading as Rawkode Academy ·{" "}
         <a href="mailto:david@rawkode.academy">david@rawkode.academy</a>
       </p>
     </footer>
@@ -46,22 +50,26 @@ const fullTitle = title === "Antarctical" ? title : `${title} · Antarctical`;
 
 <style is:global>
   :root {
-    --bg: #ffffff;
-    --surface: #f5f7fb;
-    --text: #1a1f2b;
-    --muted: #5b6475;
-    --border: #e2e6ee;
-    --accent: #2563eb;
+    --bg: #f8fbfd;
+    --surface: #edf4f8;
+    --text: #203e5a;
+    --muted: #536e81;
+    --border: #d5e3ed;
+    --accent: #24647f;
+    --button-bg: #285b7b;
+    --button-text: #ffffff;
     color-scheme: light dark;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #0f131a;
-      --surface: #171c25;
-      --text: #e6e9ef;
-      --muted: #9aa3b5;
-      --border: #262d3a;
-      --accent: #7aa7ff;
+      --bg: #152332;
+      --surface: #1d3042;
+      --text: #edf7fc;
+      --muted: #b0c7d8;
+      --border: #344e63;
+      --accent: #9bd0eb;
+      --button-bg: #b8dced;
+      --button-text: #173b55;
     }
   }
   * {
@@ -83,6 +91,14 @@ const fullTitle = title === "Antarctical" ? title : `${title} · Antarctical`;
     max-width: 44rem;
     margin: 0 auto;
     padding: 0 16px;
+  }
+  .home main {
+    max-width: 72rem;
+    padding-top: 3.5rem;
+  }
+  header,
+  footer {
+    max-width: 72rem;
   }
   header {
     display: flex;
@@ -132,6 +148,22 @@ const fullTitle = title === "Antarctical" ? title : `${title} · Antarctical`;
   a {
     color: var(--accent);
   }
+  a:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 5px;
+    border-radius: 3px;
+  }
+  .skip-link {
+    position: absolute;
+    left: 1rem;
+    top: -5rem;
+    padding: 0.5rem 1rem;
+    background: var(--bg);
+    z-index: 1;
+  }
+  .skip-link:focus {
+    top: 1rem;
+  }
   li + li {
     margin-top: 0.35rem;
   }
@@ -171,5 +203,17 @@ const fullTitle = title === "Antarctical" ? title : `${title} · Antarctical`;
     border-top: 1px solid var(--border);
     color: var(--muted);
     font-size: 0.9rem;
+  }
+  @media (max-width: 480px) {
+    header {
+      flex-wrap: wrap;
+      gap: 0.75rem;
+    }
+    nav {
+      gap: 1rem;
+    }
+    .home main {
+      padding-top: 2rem;
+    }
   }
 </style>

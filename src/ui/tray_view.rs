@@ -20,6 +20,7 @@ use super::format;
 use super::theme::*;
 use super::widgets::{ButtonStyle, button, ghost_button};
 use super::{Back, show_main_window_at};
+use crate::branding;
 use crate::model::{add_days, months_between, week_start};
 use crate::store::Store;
 use crate::sync::{Command, ViewId};
@@ -462,19 +463,7 @@ impl Render for TrayPopoverView {
                                     .flex()
                                     .items_center()
                                     .gap_2()
-                                    .child(
-                                        div()
-                                            .size(px(25.0))
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .rounded_md()
-                                            .bg(rgb(ACCENT))
-                                            .text_size(px(11.0))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0x171323))
-                                            .child("A"),
-                                    )
+                                    .child(branding::icon(32.0))
                                     .child(
                                         div()
                                             .text_size(px(12.0))
@@ -720,7 +709,7 @@ fn open_on_display(
         is_minimizable: false,
         display_id: display.as_ref().map(|display| display.id()),
         window_background: WindowBackgroundAppearance::Opaque,
-        app_id: Some("korora.tech.Antarctical".into()),
+        app_id: Some(branding::APP_ID.into()),
         window_min_size: Some(size),
         window_decorations: Some(WindowDecorations::Client),
         ..Default::default()
