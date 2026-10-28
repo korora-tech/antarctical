@@ -1,0 +1,133 @@
+---
+import Page from "../layouts/Page.astro";
+---
+
+<Page
+  title="Privacy policy"
+  description="How Antarctical handles your Google account and calendar data."
+  updated="28 October 2026"
+>
+  <p>
+    This policy explains how Antarctical, a desktop calendar app for Linux, handles
+    your information. Antarctical is provided by P4X-639 Ltd, trading as Rawkode
+    Academy ("we", "us").
+  </p>
+
+  <div class="callout">
+    <strong>In short:</strong> Antarctical runs on your computer and talks to Google
+    directly. Your Google data is never sent to us or to anyone else. We do not
+    collect analytics, telemetry or crash reports.
+  </div>
+
+  <h2>Google user data Antarctical accesses</h2>
+  <p>When you sign in with Google, Antarctical asks for these permissions:</p>
+  <table>
+    <thead>
+      <tr><th>Permission</th><th>What Antarctical does with it</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>openid</code>, <code>userinfo.email</code>, <code>userinfo.profile</code></td>
+        <td>Identifies the signed-in account, so you can tell your accounts apart in the app.</td>
+      </tr>
+      <tr>
+        <td><code>calendar</code></td>
+        <td>
+          Reads your calendar list and events (titles, times, locations, descriptions,
+          guests, video-call links and reminders) to display them. Editing features
+          use it to create, change or delete events and calendars, and only when you
+          ask Antarctical to.
+        </td>
+      </tr>
+      <tr>
+        <td><code>calendar.app.created</code></td>
+        <td>Manages calendars that Antarctical creates on your behalf, when you ask it to.</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    Antarctical uses this data only to provide its calendar features to you. It does
+    not use it for advertising, does not sell it, and does not use it to develop or
+    train AI or machine-learning models.
+  </p>
+
+  <h2>Where your data is kept</h2>
+  <ul>
+    <li>
+      <strong>Calendar data</strong> is held in memory while Antarctical runs and is
+      not written to disk.
+    </li>
+    <li>
+      <strong>Sign-in tokens</strong> (one refresh token per Google account) and, if you
+      choose to use your own OAuth client, its ID and secret are stored in your
+      desktop's keyring (Secret Service: GNOME Keyring, KWallet, KeePassXC or
+      similar). Short-lived access tokens are kept in memory only.
+    </li>
+    <li>
+      <strong>Preferences</strong> (which calendars are visible, the selected view,
+      reminders, clock format and whether declined events are shown) are saved in
+      <code>~/.config/antarctical/settings.json</code> on your computer.
+    </li>
+  </ul>
+
+  <h2>Sharing</h2>
+  <p>
+    Antarctical exchanges data only with Google, over encrypted connections, to sign
+    you in and to read or change your calendars. We do not receive, store or share
+    your Google data. On your own computer, Antarctical shows desktop notifications
+    for reminders and, if you use the Dux desktop shell, makes your events available
+    to it over a local socket on your computer.
+  </p>
+
+  <h2>Google API Services User Data Policy</h2>
+  <p>
+    Antarctical's use and transfer of information received from Google APIs to any
+    other app will adhere to the
+    <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>,
+    including the Limited Use requirements.
+  </p>
+
+  <h2>Removing access and deleting data</h2>
+  <ul>
+    <li>
+      Removing an account in Antarctical's Settings revokes its access with Google
+      and deletes its token from your keyring.
+    </li>
+    <li>
+      You can also revoke access at any time from your
+      <a href="https://myaccount.google.com/permissions">Google Account permissions</a>.
+    </li>
+    <li>
+      Uninstalling Antarctical and deleting <code>~/.config/antarctical</code> and its
+      keyring items removes everything it stored. As we hold none of your data,
+      there is nothing for us to delete.
+    </li>
+  </ul>
+
+  <h2>This website</h2>
+  <p>
+    This website is hosted by Cloudflare, which processes technical information such
+    as IP addresses to deliver and secure it. The website sets no cookies and uses
+    no analytics.
+  </p>
+
+  <h2>Your rights</h2>
+  <p>
+    Under UK data protection law you have rights over your personal data, including
+    access, correction and deletion. Because Antarctical keeps your data on your own
+    computer, you can exercise most of these directly. For anything else, or if you
+    have a question about this policy, email
+    <a href="mailto:david@rawkode.academy">david@rawkode.academy</a>. You can also
+    complain to the <a href="https://ico.org.uk/make-a-complaint/">Information Commissioner's Office</a>.
+  </p>
+
+  <h2>Children</h2>
+  <p>Antarctical is not directed at children under 13.</p>
+
+  <h2>Changes</h2>
+  <p>
+    If this policy changes, we will update it here and change the date above. If a
+    change affects how Antarctical uses your Google data, we will ask for your
+    consent where required.
+  </p>
+</Page>
