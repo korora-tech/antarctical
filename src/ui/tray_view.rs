@@ -376,7 +376,6 @@ impl TrayPopoverView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(rgb(TEXT))
                             .child(match &store.auth {
-                                crate::sync::AuthState::NeedsClient => "Connect Google Calendar",
                                 crate::sync::AuthState::Starting => "Getting things ready",
                                 crate::sync::AuthState::Locked => "Unlock your keyring",
                                 _ => "Your calendar is ready when you are",
@@ -469,19 +468,7 @@ impl Render for TrayPopoverView {
                                     .flex()
                                     .items_center()
                                     .gap_2()
-                                    .child(
-                                        div()
-                                            .size(px(25.0))
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .rounded_md()
-                                            .bg(rgb(ACCENT))
-                                            .text_size(px(11.0))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0x171323))
-                                            .child("A"),
-                                    )
+                                    .child(branding::icon(32.0))
                                     .child(
                                         div()
                                             .text_size(px(12.0))
@@ -702,7 +689,7 @@ fn open_on_display(
             })
             .unwrap_or((px(12.0), px(56.0)));
         WindowKind::LayerShell(LayerShellOptions {
-            namespace: "com.korora.Antarctical.tray".to_string(),
+            namespace: "korora.tech.Antarctical.tray".to_string(),
             layer: Layer::Overlay,
             anchor: Anchor::TOP | Anchor::LEFT,
             exclusive_zone: Some(px(0.0)),

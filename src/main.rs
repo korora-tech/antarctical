@@ -168,7 +168,7 @@ fn main() {
                 cx.spawn(async move |cx| {
                     while let Ok(action) = shell_rx.recv().await {
                         cx.update(|cx| match action {
-                            ShellAction::Show => ui::show_main_window(&store, cx),
+                            ShellAction::Show => ui::windows::show_main_window(&store, cx),
                         });
                     }
                 })
