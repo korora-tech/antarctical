@@ -156,6 +156,17 @@ struct Account {
     calendars: Vec<Calendar>,
 }
 
+struct PendingSignIn {
+    seq: u64,
+    cancel: Arc<AtomicBool>,
+}
+
+#[derive(Clone, Copy)]
+enum Revoke {
+    WithGoogle,
+    LocalOnly,
+}
+
 struct Worker {
     secrets: Secrets,
     events: async_channel::Sender<SyncEvent>,
@@ -168,7 +179,7 @@ struct Worker {
     visible: BTreeMap<ViewId, Vec<Date>>,
     last_refresh: Option<Instant>,
     retry_at: Option<Instant>,
-    sign_in: Option<(u64, Arc<AtomicBool>)>,
+    sign_in: Option<PendingSignIn>,
     sign_in_seq: u64,
     auth: AuthState,
     /// The last keyring read failed (locked, no Secret Service); retried on Refresh.
@@ -417,7 +428,7 @@ impl Worker {
                 client_secret,
             } => self.save_client(client_id, client_secret),
             Command::ClearClient => {
-                self.remove_all_accounts(true);
+                self.remove_all_accounts(Revoke::WithGoogle);
                 match self.secrets.clear_client() {
                     Ok(()) => {
                         // Tokens from the removed client were revoked above; the built-in
@@ -438,7 +449,7 @@ impl Worker {
             Command::CancelSignIn => self.cancel_sign_in(),
             Command::SignInFinished(seq, result) => self.finish_sign_in(seq, result),
             Command::RemoveAccount(email) => {
-                if self.remove_account(&email, true) {
+                if self.remove_account(&email, Revoke::WithGoogle) {
                     self.emit(SyncEvent::Notice(format!("Signed out of {email}")));
                 }
             }
@@ -523,7 +534,7 @@ impl Worker {
         {
             // Refresh tokens belong to the client id that issued them; a rotated secret for
             // the same client keeps every session.
-            self.remove_all_accounts(true);
+            self.remove_all_accounts(Revoke::WithGoogle);
         }
         match self.secrets.set_client(&client) {
             Ok(()) => {
@@ -541,8 +552,8 @@ impl Worker {
     }
 
     fn cancel_sign_in(&mut self) {
-        if let Some((_, cancel)) = self.sign_in.take() {
-            cancel.store(true, Ordering::Relaxed);
+        if let Some(sign_in) = self.sign_in.take() {
+            sign_in.cancel.store(true, Ordering::Relaxed);
             self.emit(SyncEvent::SigningIn(None));
         }
     }
@@ -571,7 +582,10 @@ impl Worker {
         self.sign_in_seq += 1;
         let seq = self.sign_in_seq;
         let cancel = Arc::new(AtomicBool::new(false));
-        self.sign_in = Some((seq, cancel.clone()));
+        self.sign_in = Some(PendingSignIn {
+            seq,
+            cancel: cancel.clone(),
+        });
         self.emit(SyncEvent::Problem(None));
         self.emit(SyncEvent::SigningIn(Some(url.clone())));
         if let Err(e) = open::that_detached(&url) {
@@ -608,7 +622,7 @@ impl Worker {
         // Superseded or cancelled: drop whatever Google issued. Never revoke a token whose
         // account is unknown: revoking removes the app's whole grant for that user, which
         // would also sign out an account that is already here.
-        if self.sign_in.as_ref().map(|(s, _)| *s) != Some(seq) {
+        if self.sign_in.as_ref().map(|sign_in| sign_in.seq) != Some(seq) {
             return;
         }
         self.sign_in = None;
@@ -674,14 +688,16 @@ impl Worker {
         self.refresh_all();
     }
 
-    /// Forgets one account. `revoke` also tells Google to invalidate its refresh token.
+    /// Forgets one account. `Revoke::WithGoogle` also invalidates its refresh token with Google.
     /// Returns whether the account existed.
-    fn remove_account(&mut self, email: &str, revoke: bool) -> bool {
+    fn remove_account(&mut self, email: &str, revoke: Revoke) -> bool {
         let Some(i) = self.accounts.iter().position(|a| a.email == email) else {
             return false;
         };
         let account = self.accounts.remove(i);
-        if revoke && !oauth::revoke(&self.agent, &account.refresh_token) {
+        if matches!(revoke, Revoke::WithGoogle)
+            && !oauth::revoke(&self.agent, &account.refresh_token)
+        {
             self.emit(SyncEvent::Notice(format!(
                 "Signed out of {email} here, but Google could not be told. Remove access at \
                  myaccount.google.com/permissions."
@@ -701,7 +717,7 @@ impl Worker {
         true
     }
 
-    fn remove_all_accounts(&mut self, revoke: bool) {
+    fn remove_all_accounts(&mut self, revoke: Revoke) {
         self.cancel_sign_in();
         let emails: Vec<String> = self.accounts.iter().map(|a| a.email.clone()).collect();
         for email in emails {
@@ -745,7 +761,7 @@ impl Worker {
                 Ok(t.access_token)
             }
             Err(AuthError::InvalidGrant(_)) => {
-                self.remove_account(email, false);
+                self.remove_account(email, Revoke::LocalOnly);
                 let msg = format!(
                     "The sign-in for {email} expired or was revoked; add it again in Settings."
                 );
@@ -754,7 +770,7 @@ impl Worker {
             }
             Err(AuthError::InvalidClient(m)) => {
                 // No account can work with a rejected client.
-                self.remove_all_accounts(false);
+                self.remove_all_accounts(Revoke::LocalOnly);
                 let msg = format!(
                     "Google rejected the OAuth client ({m}). If you saved your own in \
                      Settings, check it; then add your accounts again."
@@ -818,7 +834,7 @@ impl Worker {
                 Err(CallError::Auth(_)) if !self.accounts.iter().any(|a| a.email == email) => {}
                 // This account is refused (quota, Workspace policy…); the others carry on.
                 Err(CallError::Api(
-                    e @ (ApiError::Forbidden(_) | ApiError::NotFound | ApiError::Http(..)),
+                    e @ (ApiError::Forbidden(_) | ApiError::NotFound | ApiError::Http { .. }),
                 )) => problems.push(format!("{email}: {e}")),
                 Err(e) => {
                     self.emit_calendars();
@@ -903,7 +919,7 @@ impl Worker {
                     Ok(evs) => evs,
                     // A calendar-specific refusal: report it and carry on with the others.
                     Err(CallError::Api(
-                        e @ (ApiError::Forbidden(_) | ApiError::NotFound | ApiError::Http(..)),
+                        e @ (ApiError::Forbidden(_) | ApiError::NotFound | ApiError::Http { .. }),
                     )) => {
                         problems.push(format!("{}: {e}", cal.name));
                         continue;
@@ -925,11 +941,11 @@ impl Worker {
                     let in_month = events
                         .iter()
                         .filter(|e| {
-                            let (s, en) = e.instants(&tz);
-                            if s == en {
-                                s >= m_from && s < m_to
+                            let span = e.instants(&tz);
+                            if span.start == span.end {
+                                span.start >= m_from && span.start < m_to
                             } else {
-                                s < m_to && en > m_from
+                                span.start < m_to && span.end > m_from
                             }
                         })
                         .cloned()

@@ -29,7 +29,10 @@ pub enum ApiError {
     NotFound,
     RateLimited,
     Network(String),
-    Http(u16, String),
+    Http {
+        status: u16,
+        body: String,
+    },
     Decode(String),
 }
 
@@ -41,7 +44,9 @@ impl fmt::Display for ApiError {
             ApiError::NotFound => write!(f, "Calendar not found"),
             ApiError::RateLimited => write!(f, "Google Calendar rate limit reached"),
             ApiError::Network(m) => write!(f, "Network error: {m}"),
-            ApiError::Http(code, m) => write!(f, "Google Calendar returned HTTP {code}: {m}"),
+            ApiError::Http { status, body } => {
+                write!(f, "Google Calendar returned HTTP {status}: {body}")
+            }
             ApiError::Decode(m) => write!(f, "Unexpected response from Google: {m}"),
         }
     }
@@ -82,7 +87,10 @@ fn get<T: serde::de::DeserializeOwned>(
             Err(ApiError::RateLimited)
         }
         403 => Err(ApiError::Forbidden(error_message(&body))),
-        _ => Err(ApiError::Http(status, error_message(&body))),
+        _ => Err(ApiError::Http {
+            status,
+            body: error_message(&body),
+        }),
     }
 }
 

@@ -4,6 +4,13 @@ use jiff::civil::Date;
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, ToSpan, Zoned};
 
+/// A half-open interval represented by its start and exclusive end instants.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimeSpan {
+    pub start: Timestamp,
+    pub end: Timestamp,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Calendar {
     /// Unique across accounts: [`Calendar::key`] of the account and the Google calendar id.
@@ -98,20 +105,23 @@ impl Event {
     }
 
     /// Start and (exclusive) end as instants. All-day events start and end at local midnight.
-    pub fn instants(&self, tz: &TimeZone) -> (Timestamp, Timestamp) {
+    pub fn instants(&self, tz: &TimeZone) -> TimeSpan {
         match self.when {
-            When::Timed { start, end } => (start, end.max(start)),
-            When::AllDay { start, end } => (
-                day_start(start, tz).timestamp(),
-                day_start(end.max(start.tomorrow().unwrap_or(start)), tz).timestamp(),
-            ),
+            When::Timed { start, end } => TimeSpan {
+                start,
+                end: end.max(start),
+            },
+            When::AllDay { start, end } => TimeSpan {
+                start: day_start(start, tz).timestamp(),
+                end: day_start(end.max(start.tomorrow().unwrap_or(start)), tz).timestamp(),
+            },
         }
     }
 
     /// Whether any part of the event falls on `date` in `tz`. Zero-length events count on the
     /// day they start; an event ending exactly at midnight does not spill into the next day.
     pub fn occurs_on(&self, date: Date, tz: &TimeZone) -> bool {
-        let (start, end) = self.instants(tz);
+        let TimeSpan { start, end } = self.instants(tz);
         let day_from = day_start(date, tz).timestamp();
         let day_to = day_start(date.tomorrow().unwrap_or(date), tz).timestamp();
         if start == end {
@@ -122,11 +132,11 @@ impl Event {
     }
 
     pub fn start_zoned(&self, tz: &TimeZone) -> Zoned {
-        self.instants(tz).0.to_zoned(tz.clone())
+        self.instants(tz).start.to_zoned(tz.clone())
     }
 
     pub fn end_zoned(&self, tz: &TimeZone) -> Zoned {
-        self.instants(tz).1.to_zoned(tz.clone())
+        self.instants(tz).end.to_zoned(tz.clone())
     }
 }
 

@@ -23,7 +23,7 @@ use jiff::tz::TimeZone;
 use jiff::{Timestamp, Zoned};
 
 use dankcal::ShellAction;
-use store::Store;
+use store::{Mode, Store};
 use sync::Command;
 use tray::{Tray, TrayAction, TrayContent};
 
@@ -74,9 +74,10 @@ fn main() {
         }
     };
 
+    let mode = if demo { Mode::Demo } else { Mode::Google };
     let mut prefs = config::Prefs::load();
-    prefs.ephemeral = demo;
-    let worker = if demo {
+    prefs.ephemeral = mode == Mode::Demo;
+    let worker = if mode == Mode::Demo {
         demo::start()
     } else {
         sync::start_google(secrets::Secrets::keyring())
@@ -84,7 +85,11 @@ fn main() {
     let (sync, events) = match worker {
         Ok(worker) => worker,
         Err(error) => {
-            let kind = if demo { "demo" } else { "Google sync" };
+            let kind = if mode == Mode::Demo {
+                "demo"
+            } else {
+                "Google sync"
+            };
             eprintln!("antarctical: could not start the {kind} worker: {error}");
             if let Some(l) = listener {
                 l.discard();
@@ -108,7 +113,7 @@ fn main() {
         .with_quit_mode(QuitMode::Explicit)
         .run(move |cx: &mut App| {
             ui::bind_keys(cx);
-            let store = cx.new(|_| Store::new(sync.clone(), demo, prefs));
+            let store = cx.new(|_| Store::new(sync.clone(), mode, prefs));
 
             // Sync worker → store.
             {
@@ -334,7 +339,7 @@ fn tray_content(store: &Store) -> TrayContent {
         store
             .events_on(today, &tz)
             .into_iter()
-            .filter(|e| !e.declined() && e.instants(&tz).1 > now.timestamp())
+            .filter(|e| !e.declined() && e.instants(&tz).end > now.timestamp())
             .collect()
     } else {
         vec![]
@@ -352,7 +357,7 @@ fn tray_content(store: &Store) -> TrayContent {
         .collect();
     let next = upcoming
         .iter()
-        .find(|e| !e.is_all_day() && e.instants(&tz).0 > now.timestamp());
+        .find(|e| !e.is_all_day() && e.instants(&tz).start > now.timestamp());
     let tooltip = match (&store.auth, next) {
         (sync::AuthState::Locked, _) => "Keyring locked".to_string(),
         _ if !store.signed_in() => "Not signed in".to_string(),

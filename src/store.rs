@@ -12,9 +12,18 @@ use crate::config::Prefs;
 use crate::model::{Calendar, Event, add_days, months_between};
 use crate::sync::{AuthState, Command, SyncEvent, SyncHandle};
 
+/// The account data source represented by a [`Store`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// Calendars and events synced from Google.
+    Google,
+    /// Generated local sample calendars and events.
+    Demo,
+}
+
 pub struct Store {
     pub sync: SyncHandle,
-    pub demo: bool,
+    pub mode: Mode,
     pub auth: AuthState,
     /// Saved OAuth client id (the secret never leaves the worker).
     pub client_id: Option<String>,
@@ -32,10 +41,10 @@ pub struct Store {
 }
 
 impl Store {
-    pub fn new(sync: SyncHandle, demo: bool, prefs: Prefs) -> Self {
+    pub fn new(sync: SyncHandle, mode: Mode, prefs: Prefs) -> Self {
         Self {
             sync,
-            demo,
+            mode,
             auth: AuthState::Starting,
             client_id: None,
             accounts: vec![],
@@ -180,7 +189,7 @@ impl Store {
         out.sort_by(|a, b| {
             b.is_all_day()
                 .cmp(&a.is_all_day())
-                .then_with(|| a.instants(tz).0.cmp(&b.instants(tz).0))
+                .then_with(|| a.instants(tz).start.cmp(&b.instants(tz).start))
                 .then_with(|| a.title.cmp(&b.title))
         });
         out
@@ -276,7 +285,7 @@ mod tests {
             ephemeral: true,
             ..Prefs::default()
         };
-        let mut s = Store::new(SyncHandle::from_sender(tx), true, prefs);
+        let mut s = Store::new(SyncHandle::from_sender(tx), Mode::Demo, prefs);
         s.apply(SyncEvent::Calendars(vec![
             Calendar {
                 id: "a".into(),
