@@ -20,6 +20,7 @@ use super::{
     Back, CloseWindow, Next, OpenSettings, Previous, Quit, Refresh, ShowAgenda, ShowDay, ShowMonth,
     ShowWeek, Today,
 };
+use crate::branding;
 use crate::config::ViewMode;
 use crate::model::{Event, Response, add_days, add_months, month_grid, months_between, week_start};
 use crate::store::Store;
@@ -252,20 +253,7 @@ impl MainView {
                     .items_center()
                     .gap_3()
                     .min_w(px(0.0))
-                    .child(
-                        div()
-                            .size(px(32.0))
-                            .flex()
-                            .flex_shrink_0()
-                            .items_center()
-                            .justify_center()
-                            .rounded_md()
-                            .bg(rgb(ACCENT))
-                            .text_size(px(13.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0x171323))
-                            .child(Zoned::now().day().to_string()),
-                    )
+                    .child(branding::icon(36.0))
                     .child(
                         div()
                             .font_weight(FontWeight::SEMIBOLD)
@@ -658,9 +646,12 @@ impl MainView {
             div()
                 .size_full()
                 .flex()
+                .flex_col()
                 .items_center()
                 .justify_center()
+                .gap_4()
                 .p_8()
+                .child(branding::mascot(128.0))
                 .child(div().w(px(460.0)).child(content))
                 .into_any_element(),
         )

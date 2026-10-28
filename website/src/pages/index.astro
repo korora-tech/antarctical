@@ -1,27 +1,205 @@
 ---
 import Page from "../layouts/Page.astro";
+import penguin from "../../../data/branding/antarctical-penguin.svg?url";
+
+const repository = "https://github.com/korora-tech/antarctical";
 ---
 
 <Page
   title="Antarctical"
-  description="A native Google Calendar app for the Linux desktop."
+  description="A native Google Calendar app for the Linux desktop. Your accounts, agenda and reminders, at home on Linux."
+  home
 >
-  <p>
-    Antarctical is a native Google Calendar app for the Linux desktop. It shows
-    the calendars of one or more Google accounts in month, week, day and agenda
-    views, puts today's agenda in the system tray, and notifies you of event
-    reminders.
-  </p>
-  <p>
-    It runs entirely on your computer and talks to Google directly. Your calendar
-    data never passes through our servers, and Antarctical has no analytics or
-    telemetry.
-  </p>
-  <ul>
-    <li>
-      <a href="https://github.com/korora-tech/antarctical">Source code and install instructions</a>
-    </li>
-    <li><a href="/privacy-policy">Privacy policy</a></li>
-    <li><a href="/terms-of-service">Terms of service</a></li>
-  </ul>
+  <section class="hero" aria-labelledby="hero-title">
+    <div class="hero-copy">
+      <p class="eyebrow">Google Calendar, at home on Linux</p>
+      <h1 id="hero-title">A little penguin.<br /><span>A clearer day.</span></h1>
+      <p class="intro">
+        Meet Antarctical, a native calendar app for your Linux desktop. Bring your
+        Google accounts together, see what’s next, and keep your day close at hand.
+      </p>
+      <div class="actions">
+        <a class="button primary" href={`${repository}#run`}>Get Antarctical <span aria-hidden="true">↗</span></a>
+        <a class="button secondary" href={repository}>Explore the source</a>
+      </div>
+      <p class="platforms">Made for Linux · Wayland and X11 · Open source</p>
+    </div>
+    <div class="mascot">
+      <img
+        src={penguin}
+        alt="The Antarctical mascot: a smiling blue penguin holding a calendar."
+        width="512"
+        height="512"
+        fetchpriority="high"
+      />
+    </div>
+  </section>
+
+  <section class="features" aria-label="Calendar features">
+    <article>
+      <p class="feature-label">YOUR CALENDARS</p>
+      <h2>One place for your plans.</h2>
+      <p>
+        See calendars from one or more Google accounts together. Switch between
+        month, week, day and agenda views to find the perspective you need.
+      </p>
+    </article>
+    <article>
+      <p class="feature-label">CLOSE AT HAND</p>
+      <h2>A penguin in your tray.</h2>
+      <p>
+        Click the penguin for your agenda, jump into the full calendar, and get
+        desktop notifications when it’s time for your next event.
+      </p>
+    </article>
+    <article>
+      <p class="feature-label">ON YOUR COMPUTER</p>
+      <h2>Your day stays yours.</h2>
+      <p>
+        Antarctical talks to Google directly. Your calendar data never passes
+        through our servers, and there’s no analytics or telemetry.
+      </p>
+    </article>
+  </section>
+
+  <aside class="privacy-note">
+    <p>
+      Google credentials stay in your system keyring. Calendar data stays in memory.{" "}
+      <a href="/privacy-policy">Read the privacy policy</a>{" "}or{" "}
+      <a href="/terms-of-service">terms of service</a>.
+    </p>
+  </aside>
 </Page>
+
+<style>
+  .hero {
+    display: grid;
+    grid-template-columns: 1.25fr 1fr;
+    align-items: center;
+    gap: 3rem;
+    padding: 1rem 0 4.5rem;
+  }
+  .eyebrow,
+  .feature-label {
+    color: var(--accent);
+    font-size: 0.8rem;
+    font-weight: 650;
+    letter-spacing: 0.08em;
+  }
+  .eyebrow {
+    margin: 0 0 1.25rem;
+  }
+  h1 {
+    font-size: clamp(2.65rem, 5vw, 4.15rem);
+    letter-spacing: -0.055em;
+    line-height: 1.12;
+    margin: 0 0 1.5rem;
+  }
+  h1 span {
+    color: var(--accent);
+  }
+  .intro {
+    max-width: 34rem;
+    font-size: 1.12rem;
+    color: var(--muted);
+    margin: 0 0 1.75rem;
+  }
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+  }
+  .button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem;
+    min-height: 48px;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    padding: 0.65rem 1.15rem;
+    font-size: 0.95rem;
+    font-weight: 650;
+    text-decoration: none;
+  }
+  .primary {
+    background: var(--button-bg);
+    color: var(--button-text);
+  }
+  .primary:hover {
+    filter: brightness(1.08);
+  }
+  .secondary {
+    border-color: var(--border);
+    color: var(--text);
+  }
+  .secondary:hover {
+    background: var(--surface);
+  }
+  .platforms {
+    color: var(--muted);
+    font-size: 0.8rem;
+    margin: 1.15rem 0 0;
+  }
+  .mascot {
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: radial-gradient(ellipse, var(--surface) 30%, transparent 70%);
+  }
+  .mascot img {
+    display: block;
+    width: 100%;
+    max-width: 28rem;
+    height: auto;
+  }
+  .features {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 2rem;
+    border-top: 1px solid var(--border);
+    padding: 2.5rem 0;
+  }
+  .feature-label {
+    font-size: 0.7rem;
+    margin: 0 0 0.75rem;
+  }
+  .features h2 {
+    font-size: 1.2rem;
+    line-height: 1.35;
+    margin: 0 0 0.75rem;
+  }
+  .features article > p:last-child {
+    color: var(--muted);
+    font-size: 0.95rem;
+    margin: 0;
+  }
+  .privacy-note {
+    padding: 1rem 1.5rem;
+    background: var(--surface);
+    border-radius: 12px;
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+  .privacy-note p {
+    margin: 0;
+  }
+  @media (max-width: 760px) {
+    .hero {
+      grid-template-columns: 1fr;
+      gap: 1.5rem;
+      padding-bottom: 2.5rem;
+    }
+    .hero-copy {
+      max-width: 36rem;
+    }
+    .mascot img {
+      max-width: 18rem;
+    }
+    .features {
+      grid-template-columns: 1fr;
+      gap: 2rem;
+      padding: 2rem 0;
+    }
+  }
+</style>

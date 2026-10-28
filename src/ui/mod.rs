@@ -15,6 +15,7 @@ use gpui::{
 };
 use jiff::civil::Date;
 
+use crate::branding;
 use crate::store::Store;
 use crate::sync::{Command, ViewId};
 
@@ -100,7 +101,7 @@ pub fn show_main_window_at(store: &Entity<Store>, date: Date, cx: &mut App) {
                 title: Some("Antarctical".into()),
                 ..Default::default()
             }),
-            app_id: Some("korora.tech.Antarctical".into()),
+            app_id: Some(branding::APP_ID.into()),
             window_min_size: Some(size(px(960.), px(620.))),
             ..Default::default()
         },

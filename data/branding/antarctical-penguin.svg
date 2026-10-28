@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none" role="img" aria-labelledby="title description">
+  <title id="title">Antarctical penguin logo</title>
+  <desc id="description">A smiling icy blue penguin holding a calendar clipboard, with closed eyes, faceted flippers and a curled page. Editable vector artwork with a transparent background.</desc>
+
+  <defs>
+    <linearGradient id="body-ice" x1="155" y1="49" x2="339" y2="451" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#a8c9dc"/><stop offset=".25" stop-color="#557b9b"/><stop offset=".57" stop-color="#2f5479"/><stop offset="1" stop-color="#183451"/>
+    </linearGradient>
+    <linearGradient id="crown-light" x1="186" y1="44" x2="245" y2="138" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#e0f0f7" stop-opacity=".9"/><stop offset="1" stop-color="#9ec5dd" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="snow" x1="205" y1="110" x2="304" y2="279" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffffff"/><stop offset=".56" stop-color="#f1f8fc"/><stop offset="1" stop-color="#ccdfeb"/>
+    </linearGradient>
+    <linearGradient id="belly" x1="166" y1="257" x2="331" y2="444" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#f4fbfe"/><stop offset=".5" stop-color="#b8d2e3"/><stop offset="1" stop-color="#edf7fc"/>
+    </linearGradient>
+    <linearGradient id="flipper" x1="115" y1="230" x2="145" y2="372" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#e7f4fa"/><stop offset=".32" stop-color="#9ab8ce"/><stop offset=".66" stop-color="#507b9d"/><stop offset="1" stop-color="#284d72"/>
+    </linearGradient>
+    <linearGradient id="clipboard-rim" x1="163" y1="251" x2="343" y2="476" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#688da8"/><stop offset=".5" stop-color="#355a7d"/><stop offset="1" stop-color="#203e60"/>
+    </linearGradient>
+    <linearGradient id="paper" x1="194" y1="286" x2="323" y2="448" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffffff"/><stop offset=".65" stop-color="#f5faff"/><stop offset="1" stop-color="#dceaf3"/>
+    </linearGradient>
+    <linearGradient id="clip-metal" x1="246" y1="231" x2="261" y2="279" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#f8fdff"/><stop offset=".55" stop-color="#c9dfed"/><stop offset="1" stop-color="#89adc6"/>
+    </linearGradient>
+    <linearGradient id="page-fold" x1="307" y1="414" x2="329" y2="436" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffffff"/><stop offset=".45" stop-color="#f5fbff"/><stop offset="1" stop-color="#a9c7d9"/>
+    </linearGradient>
+    <linearGradient id="beak-top" x1="240" y1="163" x2="273" y2="190" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#edf8ff"/><stop offset="1" stop-color="#7da7c6"/>
+    </linearGradient>
+    <clipPath id="body-clip"><path d="M256 40C190 40 148 92 139 164C134 209 119 240 115 295C109 370 132 430 168 452C202 471 311 471 346 452C382 430 405 368 397 295C393 240 378 209 373 164C364 92 322 40 256 40Z"/></clipPath>
+    <clipPath id="wing-clip"><path d="M138 209C118 226 87 266 81 300C74 329 88 354 117 368C140 378 168 377 188 366C195 360 180 349 162 338C142 325 125 308 119 286C113 261 123 233 138 209Z"/></clipPath>
+  </defs>
+  <g id="penguin-body">
+<path d="M256 40C190 40 148 92 139 164C134 209 119 240 115 295C109 370 132 430 168 452C202 471 311 471 346 452C382 430 405 368 397 295C393 240 378 209 373 164C364 92 322 40 256 40Z" fill="url(#body-ice)"/>
+        <g id="ice-facets" clip-path="url(#body-clip)">
+          <path d="M256 40C196 40 157 84 145 127L215 104L256 77Z" fill="url(#crown-light)"/>
+          <path d="M256 40V103L304 104L367 136C352 74 309 40 256 40Z" fill="#bbd9e9" opacity=".13"/>
+          <path d="M141 146L170 207L133 285L114 280Z" fill="#7da4c0" opacity=".29"/>
+          <path d="M371 146L342 207L379 285L398 280Z" fill="#1b4166" opacity=".29"/>
+          <path d="M119 294L167 356L146 429L112 376Z" fill="#b1d1e4" opacity=".2"/>
+          <path d="M393 294L345 356L366 429L400 376Z" fill="#6b97b5" opacity=".25"/>
+          <path d="M150 104C178 58 218 43 256 43C217 48 181 69 163 101Z" fill="#e6f6ff" opacity=".4"/>
+        </g><path d="M256 219C203 214 159 250 145 309C132 366 146 424 177 449C211 474 301 474 335 449C366 424 380 366 367 309C353 250 309 214 256 219Z" fill="url(#belly)"/>
+</g><g id="smiling-face">
+
+      <path d="M256 168C241 154 242 111 211 103C184 96 161 117 154 146C141 189 163 224 194 243C214 256 238 259 256 260C274 259 298 256 318 243C349 224 371 189 358 146C351 117 328 96 301 103C270 111 271 154 256 168Z" fill="url(#snow)"/>
+      <g fill="none" stroke="#193b5b" stroke-width="9" stroke-linecap="round">
+        <path d="M180 155C184 139 201 139 208 155"/>
+        <path d="M304 155C308 139 325 139 332 155"/>
+      </g>
+      <path d="M219 178L256 157L293 178C281 191 270 207 256 208C242 207 231 191 219 178Z" fill="#1d4163"/>
+      <path d="M227 178L256 164L285 178L256 189Z" fill="url(#beak-top)"/>
+      <path d="M229 183L256 195L283 183C273 193 265 201 256 201C247 201 239 193 229 183Z" fill="#92b9d2"/>
+      <path d="M256 164V189L227 178Z" fill="#e1f3fd" opacity=".65"/>
+
+</g><g id="calendar">
+
+      <path d="M166 251H346Q363 251 363 268V458Q363 475 346 475H166Q149 475 149 458V268Q149 251 166 251Z" fill="url(#clipboard-rim)"/>
+      <rect x="158" y="260" width="196" height="206" rx="9" fill="none" stroke="#bbd7e7" stroke-width="3" opacity=".58"/>
+      <path d="M169 279H343V401C341 423 319 452 286 456H169Z" fill="url(#paper)"/>
+      <path d="M169 279H343V302H169Z" fill="#c8deec"/>
+      <path d="M169 300H343" fill="none" stroke="#abc9dc" stroke-width="2"/>
+      <g id="calendar-days"><rect x="244" y="313" width="24" height="24" rx="2" fill="#c6dce9"/><rect x="274" y="313" width="24" height="24" rx="2" fill="#c6dce9"/><rect x="304" y="313" width="24" height="24" rx="2" fill="#c6dce9"/><rect x="184" y="343" width="24" height="24" rx="2" fill="#c0d7e5"/><rect x="214" y="343" width="24" height="24" rx="2" fill="#c0d7e5"/><rect x="244" y="343" width="24" height="24" rx="2" fill="#5c9abb"/><rect x="274" y="343" width="24" height="24" rx="2" fill="#c0d7e5"/><rect x="304" y="343" width="24" height="24" rx="2" fill="#c0d7e5"/><rect x="184" y="373" width="24" height="24" rx="2" fill="#b8d2e2"/><rect x="214" y="373" width="24" height="24" rx="2" fill="#b8d2e2"/><rect x="244" y="373" width="24" height="24" rx="2" fill="#b8d2e2"/><rect x="274" y="373" width="24" height="24" rx="2" fill="#b8d2e2"/><rect x="304" y="373" width="24" height="24" rx="2" fill="#b8d2e2"/><rect x="184" y="403" width="24" height="24" rx="2" fill="#b3cfdf"/><rect x="214" y="403" width="24" height="24" rx="2" fill="#b3cfdf"/><rect x="244" y="403" width="24" height="24" rx="2" fill="#b3cfdf"/></g>
+
+        <path d="M281 456C304 444 304 422 309 412C320 419 336 411 343 400C344 427 321 451 291 456Z" fill="#7297b0" opacity=".19"/>
+        <path d="M286 456C309 444 307 427 313 413C323 417 334 411 343 401C341 428 318 453 286 456Z" fill="url(#page-fold)"/>
+        <path d="M286 456C309 445 308 427 313 413" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" opacity=".85"/>
+
+      <g id="calendar-clip">
+        <path d="M214 247H235C235 235 244 226 256 226C268 226 277 235 277 247H298Q308 247 308 257V271Q308 281 298 281H214Q204 281 204 271V257Q204 247 214 247Z" fill="#173b5c" opacity=".2" transform="translate(0 3)"/>
+        <path d="M214 244H235C235 232 244 223 256 223C268 223 277 232 277 244H298Q308 244 308 254V268Q308 278 298 278H214Q204 278 204 268V254Q204 244 214 244Z" fill="url(#clip-metal)" stroke="#345a7b" stroke-width="6" stroke-linejoin="round"/>
+        <circle cx="256" cy="242" r="6" fill="#527b9a"/>
+        <path d="M215 251H242V244C242 236 248 230 256 230C264 230 270 236 270 244V251H297" fill="none" stroke="#f8fdff" stroke-width="3" stroke-linecap="round" opacity=".85"/>
+      </g>
+
+</g><g id="flippers">
+<g id="left-flipper">
+<path d="M138 209C118 226 87 266 81 300C74 329 88 354 117 368C140 378 168 377 188 366C195 360 180 349 162 338C142 325 125 308 119 286C113 261 123 233 138 209Z" fill="url(#flipper)"/>
+        <g clip-path="url(#wing-clip)">
+          <path d="M134 209L123 286L91 274Z" fill="#eaf7fe" opacity=".5"/>
+          <path d="M91 274L123 286L141 323L80 305Z" fill="#a5c6da" opacity=".32"/>
+          <path d="M80 305L141 323L185 360L111 347Z" fill="#d8edf8" opacity=".16"/>
+          <path d="M79 320C100 347 141 367 191 363L196 390H79Z" fill="#244c71" opacity=".48"/>
+          <path d="M134 218C115 256 118 287 140 315C151 329 167 341 177 348C153 339 135 327 123 310C106 283 110 250 134 218Z" fill="#f1fbff" opacity=".65"/>
+        </g>
+</g><g id="right-flipper" transform="translate(512 0) scale(-1 1)"><path d="M138 209C118 226 87 266 81 300C74 329 88 354 117 368C140 378 168 377 188 366C195 360 180 349 162 338C142 325 125 308 119 286C113 261 123 233 138 209Z" fill="url(#flipper)"/>
+        <g clip-path="url(#wing-clip)">
+          <path d="M134 209L123 286L91 274Z" fill="#eaf7fe" opacity=".5"/>
+          <path d="M91 274L123 286L141 323L80 305Z" fill="#a5c6da" opacity=".32"/>
+          <path d="M80 305L141 323L185 360L111 347Z" fill="#d8edf8" opacity=".16"/>
+          <path d="M79 320C100 347 141 367 191 363L196 390H79Z" fill="#244c71" opacity=".48"/>
+          <path d="M134 218C115 256 118 287 140 315C151 329 167 341 177 348C153 339 135 327 123 310C106 283 110 250 134 218Z" fill="#f1fbff" opacity=".65"/>
+        </g></g>
+</g>
+</svg>

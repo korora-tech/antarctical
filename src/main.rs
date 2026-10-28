@@ -1,3 +1,4 @@
+mod branding;
 mod config;
 mod dankcal;
 mod demo;
@@ -240,7 +241,7 @@ fn start_minute_tasks(store: Entity<Store>, tray: Option<Rc<TrayPush>>, cx: &mut
                             n.appname("Antarctical")
                                 .summary(&d.title)
                                 .body(&d.body)
-                                .icon("x-office-calendar")
+                                .icon(branding::APP_ID)
                                 .timeout(notify_rust::Timeout::Milliseconds(15_000));
                             if let Err(e) = n.show() {
                                 eprintln!("antarctical: notification failed: {e}");
@@ -363,7 +364,6 @@ fn tray_content(store: &Store) -> TrayContent {
         (_, None) => "Nothing else today".to_string(),
     };
     TrayContent {
-        day: today.day() as u8,
         date_label: today.strftime("%A %-d %B").to_string(),
         agenda,
         tooltip,
