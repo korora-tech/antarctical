@@ -39,11 +39,20 @@ const features = [
         Meet Antarctical, a native calendar app for your Linux desktop. Bring your
         Google accounts together, see what’s next, and keep your day close at hand.
       </p>
+      <aside id="google-access" class="testing-notice" aria-labelledby="testing-title">
+        <h2 id="testing-title">Google Calendar access is in testing.</h2>
+        <p>
+          Google integration is currently available only to approved testers.
+          Email <a href="mailto:david@rawkode.academy?subject=Antarctical%20tester%20access">david@rawkode.academy</a>{" "}
+          to request access, including the Google account address you want to use.
+          Demo mode is open to everyone.
+        </p>
+      </aside>
       <div class="actions">
         <a class="button primary" href="#try-it">Try Antarctical <span aria-hidden="true">↗</span></a>
         <a class="button secondary" href="#screenshots">See the app</a>
       </div>
-      <p class="platforms">Made for Linux · Wayland and X11 · Open source</p>
+      <p class="platforms">Made for Linux · Wayland and X11 · Apache 2.0</p>
     </div>
     <div class="mascot">
       <img
@@ -100,11 +109,12 @@ const features = [
       <p class="eyebrow">MEET YOUR NEXT CALENDAR</p>
       <h2 id="try-title">Take it for a spin.</h2>
       <p>Try all four views with generated calendars. Demo mode needs no Google account and does not save your preferences.</p>
+      <p>Want to connect your own calendars? <a href="#google-access">Request tester access.</a></p>
     </div>
     <div class="demo-command">
       <p class="command-label">Run with Nix</p>
       <pre><code>nix run github:korora-tech/antarctical -- --demo</code></pre>
-      <p><a href={`${repository}#run`}>Installation and setup</a>{" "}·{" "}<a href={repository}>Explore the source</a></p>
+      <p><a href={`${repository}#install-and-run`}>Installation and setup</a>{" "}·{" "}<a href={repository}>Explore the source</a></p>
     </div>
   </section>
 
@@ -177,6 +187,30 @@ const features = [
     display: flex;
     flex-wrap: wrap;
     gap: 0.75rem;
+  }
+  .testing-notice {
+    max-width: 35rem;
+    margin: 0 0 1.75rem;
+    padding: 1rem 1.25rem;
+    border-left: 3px solid var(--accent);
+    border-radius: 0 10px 10px 0;
+    background: var(--surface);
+  }
+  .testing-notice h2 {
+    margin: 0 0 0.4rem;
+    font-size: 1rem;
+    line-height: 1.4;
+  }
+  .testing-notice p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+  .testing-notice a {
+    overflow-wrap: anywhere;
+  }
+  #google-access {
+    scroll-margin-top: 2rem;
   }
   .button {
     display: inline-flex;

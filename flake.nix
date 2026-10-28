@@ -54,6 +54,7 @@
             fileset = pkgs.lib.fileset.unions [
               ./Cargo.toml
               ./Cargo.lock
+              ./LICENSE
               ./src
               ./data
             ];
@@ -71,6 +72,7 @@
           buildInputs = buildInputs pkgs;
 
           postInstall = ''
+            install -Dm644 LICENSE $out/share/licenses/antarctical/LICENSE
             install -Dm644 data/korora.tech.Antarctical.desktop $out/share/applications/korora.tech.Antarctical.desktop
             install -Dm644 data/branding/antarctical-app-icon.svg $out/share/icons/hicolor/scalable/apps/korora.tech.Antarctical.svg
             install -Dm644 data/branding/antarctical-app-icon.png $out/share/icons/hicolor/512x512/apps/korora.tech.Antarctical.png
@@ -92,8 +94,11 @@
         # The Dux bar widget: link or copy to ~/.config/dms/plugins/antarcticalNextEvent
         # (the Home Manager module does this with `dux.enable`). Clicking it runs this flake's
         # Antarctical by store path, so it works whatever dms.service's PATH is.
-        dux-plugin = pkgs.runCommand "antarctical-dux-plugin" { } ''
+        dux-plugin = pkgs.runCommand "antarctical-dux-plugin" {
+          meta.license = pkgs.lib.licenses.asl20;
+        } ''
           mkdir -p $out
+          cp ${./LICENSE} $out/LICENSE
           cp ${./dux-plugin/plugin.json} $out/plugin.json
           substitute ${./dux-plugin/NextEvent.qml} $out/NextEvent.qml \
             --replace-fail "@antarctical@" "${
