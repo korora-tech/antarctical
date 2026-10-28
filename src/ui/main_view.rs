@@ -94,11 +94,6 @@ impl MainView {
             _ticker: ticker,
         };
         this.request_range(cx);
-        if !this.store.read(cx).signed_in()
-            && matches!(this.store.read(cx).auth, AuthState::NeedsClient)
-        {
-            this.screen = Screen::Settings;
-        }
         this
     }
 
@@ -558,7 +553,6 @@ impl MainView {
     fn account_box(&self, store: &Store, cx: &Context<Self>) -> Div {
         let (dot, line1) = match (&store.auth, store.accounts.as_slice()) {
             (AuthState::Starting, _) => (DISABLED, "Opening keyring…".to_string()),
-            (AuthState::NeedsClient, _) => (AMBER, "Google client not set up".into()),
             (AuthState::Locked, _) => (AMBER, "Keyring locked".into()),
             (AuthState::Demo, _) => (ACCENT, "Demo data".into()),
             _ if store.signing_in.is_some() => (AMBER, "Waiting for browser…".into()),
@@ -646,19 +640,9 @@ impl MainView {
                 ))),
             AuthState::Starting => card("Opening your keyring…")
                 .child(body_text("Antarctical keeps your Google credentials in the system keyring. Your desktop may ask you to unlock it.")),
-            AuthState::NeedsClient => card("Connect Google Calendar")
-                .child(body_text(
-                    "Antarctical talks to Google with your own OAuth client, so no third party sits between you and your calendar. Add its client ID and secret in Settings; they are stored in your system keyring.",
-                ))
-                .child(div().flex().child(button(
-                    "go-settings",
-                    "Open Settings",
-                    ButtonStyle::Primary,
-                    Some(self.listener_click(cx, |this, window, cx| this.show_settings(window, cx))),
-                ))),
             AuthState::Ready => match store.signing_in.clone() {
                 None => card("Sign in to Google")
-                    .child(body_text("Your browser will open Google's consent page. Antarctical only asks for read-only access to your calendars. You can add more accounts later in Settings."))
+                    .child(body_text("Your browser will open Google's consent page. Google will ask you to allow access to your calendars. You can add more accounts later in Settings."))
                     .child(div().flex().child(button(
                         "sign-in",
                         "Sign in with Google",

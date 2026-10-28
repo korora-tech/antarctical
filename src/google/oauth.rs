@@ -18,7 +18,13 @@ use sha2::{Digest, Sha256};
 pub const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 pub const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 pub const REVOKE_URL: &str = "https://oauth2.googleapis.com/revoke";
-pub const SCOPE: &str = "https://www.googleapis.com/auth/calendar.readonly";
+/// Space-separated, as registered on the consent screen. Full calendar access is requested
+/// ahead of editing support; the API client still only reads.
+pub const SCOPE: &str = "openid \
+    https://www.googleapis.com/auth/userinfo.email \
+    https://www.googleapis.com/auth/userinfo.profile \
+    https://www.googleapis.com/auth/calendar \
+    https://www.googleapis.com/auth/calendar.app.created";
 
 /// A Google "Desktop app" OAuth client. Google requires the secret for desktop clients even
 /// though it cannot be kept confidential; it is still treated as a secret locally.
@@ -34,6 +40,21 @@ impl fmt::Debug for ClientCredentials {
             .field("client_id", &self.client_id)
             .field("client_secret", &"<redacted>")
             .finish()
+    }
+}
+
+/// Antarctical's own Desktop client, used unless a client is saved in Settings. A desktop
+/// client's secret ships in every binary and is public by nature (Google says as much); PKCE
+/// protects the sign-in. A build can substitute its own with `ANTARCTICAL_GOOGLE_CLIENT_ID`
+/// and `ANTARCTICAL_GOOGLE_CLIENT_SECRET`.
+pub fn builtin_client() -> ClientCredentials {
+    ClientCredentials {
+        client_id: option_env!("ANTARCTICAL_GOOGLE_CLIENT_ID")
+            .unwrap_or("825071729998-in7427untt8qsl2kpvign9aj5eoindq4.apps.googleusercontent.com")
+            .into(),
+        client_secret: option_env!("ANTARCTICAL_GOOGLE_CLIENT_SECRET")
+            .unwrap_or("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")
+            .into(),
     }
 }
 
@@ -387,6 +408,20 @@ mod tests {
         assert_eq!(
             URL_SAFE_NO_PAD.encode(Sha256::digest(v.as_bytes())),
             "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
+    }
+
+    #[test]
+    fn scopes_match_the_consent_screen() {
+        assert_eq!(
+            SCOPE.split(' ').collect::<Vec<_>>(),
+            [
+                "openid",
+                "https://www.googleapis.com/auth/userinfo.email",
+                "https://www.googleapis.com/auth/userinfo.profile",
+                "https://www.googleapis.com/auth/calendar",
+                "https://www.googleapis.com/auth/calendar.app.created",
+            ]
         );
     }
 

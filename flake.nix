@@ -71,7 +71,7 @@
           buildInputs = buildInputs pkgs;
 
           postInstall = ''
-            install -Dm644 data/com.korora.Antarctical.desktop $out/share/applications/com.korora.Antarctical.desktop
+            install -Dm644 data/korora.tech.Antarctical.desktop $out/share/applications/korora.tech.Antarctical.desktop
           '';
 
           postFixup = ''

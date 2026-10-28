@@ -65,12 +65,10 @@ pub enum ViewId {
 pub enum AuthState {
     /// The worker has not read the keyring yet.
     Starting,
-    /// No OAuth client saved in Settings.
-    NeedsClient,
     /// The keyring could not be read (locked, prompt dismissed, no Secret Service). Nothing is
     /// known about the client or accounts until it is retried (Refresh).
     Locked,
-    /// A client is saved; see [`SyncEvent::Accounts`] for who is signed in.
+    /// The client (saved or built-in) is known; see [`SyncEvent::Accounts`] for who is signed in.
     Ready,
     Demo,
 }
@@ -78,7 +76,7 @@ pub enum AuthState {
 #[derive(Clone, Debug)]
 pub enum SyncEvent {
     Auth(AuthState),
-    /// The saved client id (never the secret), for Settings.
+    /// The client id saved in Settings (never the secret); `None` means the built-in client.
     Client(Option<String>),
     /// Signed-in account emails, in display order.
     Accounts(Vec<String>),
@@ -286,16 +284,12 @@ impl Worker {
                 self.emit(SyncEvent::Client(
                     client.as_ref().map(|c| c.client_id.clone()),
                 ));
-                self.client = client;
+                self.client = Some(client.unwrap_or_else(oauth::builtin_client));
             }
             Err(e) => {
                 self.locked(e);
                 return;
             }
-        }
-        if self.client.is_none() {
-            self.set_auth(AuthState::NeedsClient);
-            return;
         }
         let tokens = match self.secrets.tokens() {
             Ok(t) => t,
@@ -426,12 +420,16 @@ impl Worker {
                 self.remove_all_accounts(true);
                 match self.secrets.clear_client() {
                     Ok(()) => {
-                        self.client = None;
+                        // Tokens from the removed client were revoked above; the built-in
+                        // client starts with no accounts.
+                        self.client = Some(oauth::builtin_client());
+                        self.sticky.remove("client");
+                        self.report(&[]);
                         self.emit(SyncEvent::Client(None));
                         self.emit(SyncEvent::Notice(
-                            "OAuth client and accounts removed from the keyring".into(),
+                            "Your OAuth client was removed; using the built-in client".into(),
                         ));
-                        self.set_auth(AuthState::NeedsClient);
+                        self.set_auth(AuthState::Ready);
                     }
                     Err(e) => self.emit(SyncEvent::Problem(Some(e.to_string()))),
                 }
@@ -550,8 +548,8 @@ impl Worker {
     }
 
     fn begin_sign_in(&mut self) {
+        // No client until the keyring has been read: a saved client must not be bypassed.
         let Some(client) = self.client.clone() else {
-            self.set_auth(AuthState::NeedsClient);
             return;
         };
         self.cancel_sign_in();
@@ -758,8 +756,8 @@ impl Worker {
                 // No account can work with a rejected client.
                 self.remove_all_accounts(false);
                 let msg = format!(
-                    "Google rejected the OAuth client saved in Settings ({m}). \
-                     Check it, then add your accounts again."
+                    "Google rejected the OAuth client ({m}). If you saved your own in \
+                     Settings, check it; then add your accounts again."
                 );
                 self.sticky.insert("client".into(), msg.clone());
                 Err(CallError::Auth(msg))

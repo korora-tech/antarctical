@@ -100,7 +100,7 @@ fn error_message(body: &str) -> String {
         .unwrap_or_else(|_| body.chars().take(200).collect())
 }
 
-/// The account's email: the id of its primary calendar (available under `calendar.readonly`,
+/// The account's email: the id of its primary calendar (available under any calendar scope,
 /// so no extra identity scope is needed).
 pub fn primary_email(agent: &ureq::Agent, token: &str) -> Result<String, ApiError> {
     #[derive(Deserialize)]

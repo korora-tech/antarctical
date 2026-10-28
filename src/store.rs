@@ -56,15 +56,7 @@ impl Store {
 
     pub fn apply(&mut self, ev: SyncEvent) {
         match ev {
-            SyncEvent::Auth(auth) => {
-                if auth == AuthState::NeedsClient {
-                    self.accounts.clear();
-                    self.calendars.clear();
-                    self.chunks.clear();
-                    self.last_sync = None;
-                }
-                self.auth = auth;
-            }
+            SyncEvent::Auth(auth) => self.auth = auth,
             SyncEvent::Client(id) => self.client_id = id,
             SyncEvent::Accounts(accounts) => {
                 if accounts.is_empty() {

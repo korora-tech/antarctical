@@ -370,7 +370,6 @@ impl TrayPopoverView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(rgb(TEXT))
                             .child(match &store.auth {
-                                crate::sync::AuthState::NeedsClient => "Connect Google Calendar",
                                 crate::sync::AuthState::Starting => "Getting things ready",
                                 crate::sync::AuthState::Locked => "Unlock your keyring",
                                 _ => "Your calendar is ready when you are",
@@ -696,7 +695,7 @@ fn open_on_display(
             })
             .unwrap_or((px(12.0), px(56.0)));
         WindowKind::LayerShell(LayerShellOptions {
-            namespace: "com.korora.Antarctical.tray".to_string(),
+            namespace: "korora.tech.Antarctical.tray".to_string(),
             layer: Layer::Overlay,
             anchor: Anchor::TOP | Anchor::LEFT,
             exclusive_zone: Some(px(0.0)),
@@ -721,7 +720,7 @@ fn open_on_display(
         is_minimizable: false,
         display_id: display.as_ref().map(|display| display.id()),
         window_background: WindowBackgroundAppearance::Opaque,
-        app_id: Some("com.korora.Antarctical".into()),
+        app_id: Some("korora.tech.Antarctical".into()),
         window_min_size: Some(size),
         window_decorations: Some(WindowDecorations::Client),
         ..Default::default()

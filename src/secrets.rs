@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::google::oauth::ClientCredentials;
 
-pub const SERVICE: &str = "com.korora.Antarctical";
+pub const SERVICE: &str = "korora.tech.Antarctical";
+/// The service name items were stored under before; each one moves to [`SERVICE`] when first read.
+const LEGACY_SERVICE: &str = "com.korora.Antarctical";
 const CLIENT_USER: &str = "google-oauth-client";
 /// JSON map of account email → refresh token, in one item: one unlock, one atomic write.
 const TOKENS_USER: &str = "google-refresh-tokens";
@@ -170,6 +172,10 @@ fn ensure_default_store() -> Result<(), SecretError> {
 }
 
 fn entry(user: &str) -> Result<keyring_core::Entry, SecretError> {
+    entry_in(SERVICE, user)
+}
+
+fn entry_in(service: &str, user: &str) -> Result<keyring_core::Entry, SecretError> {
     ensure_default_store()?;
     let label = match user {
         CLIENT_USER => "Antarctical: Google OAuth client",
@@ -177,7 +183,7 @@ fn entry(user: &str) -> Result<keyring_core::Entry, SecretError> {
         LEGACY_REFRESH_USER => "Antarctical: Google refresh token",
         _ => "Antarctical",
     };
-    keyring_core::Entry::new_with_modifiers(SERVICE, user, &HashMap::from([("label", label)]))
+    keyring_core::Entry::new_with_modifiers(service, user, &HashMap::from([("label", label)]))
         .map_err(map_err)
 }
 
@@ -193,7 +199,18 @@ fn map_err(e: keyring_core::Error) -> SecretError {
 impl SecretStore for KeyringStore {
     fn get(&self, user: &str) -> Result<Option<String>, SecretError> {
         match entry(user)?.get_password() {
-            Ok(v) => Ok(Some(v)),
+            Ok(v) => return Ok(Some(v)),
+            Err(keyring_core::Error::NoEntry) => {}
+            Err(e) => return Err(map_err(e)),
+        }
+        // Copied before the old item is deleted, so a failure part-way loses nothing.
+        let legacy = entry_in(LEGACY_SERVICE, user)?;
+        match legacy.get_password() {
+            Ok(v) => {
+                self.set(user, &v)?;
+                legacy.delete_credential().map_err(map_err)?;
+                Ok(Some(v))
+            }
             Err(keyring_core::Error::NoEntry) => Ok(None),
             Err(e) => Err(map_err(e)),
         }
@@ -203,11 +220,16 @@ impl SecretStore for KeyringStore {
         entry(user)?.set_password(value).map_err(map_err)
     }
 
+    /// Deletes the item under the old service name too, so a removal cannot be undone by a
+    /// later migration.
     fn delete(&self, user: &str) -> Result<(), SecretError> {
-        match entry(user)?.delete_credential() {
-            Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
-            Err(e) => Err(map_err(e)),
+        for service in [SERVICE, LEGACY_SERVICE] {
+            match entry_in(service, user)?.delete_credential() {
+                Ok(()) | Err(keyring_core::Error::NoEntry) => {}
+                Err(e) => return Err(map_err(e)),
+            }
         }
+        Ok(())
     }
 }
 

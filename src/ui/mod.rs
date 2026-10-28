@@ -100,7 +100,7 @@ pub fn show_main_window_at(store: &Entity<Store>, date: Date, cx: &mut App) {
                 title: Some("Antarctical".into()),
                 ..Default::default()
             }),
-            app_id: Some("com.korora.Antarctical".into()),
+            app_id: Some("korora.tech.Antarctical".into()),
             window_min_size: Some(size(px(960.), px(620.))),
             ..Default::default()
         },

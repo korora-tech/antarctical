@@ -6,4 +6,4 @@ Exec=antarctical
 Icon=x-office-calendar
 Terminal=false
 Categories=Office;Calendar;
-StartupWMClass=com.korora.Antarctical
+StartupWMClass=korora.tech.Antarctical

@@ -36,7 +36,7 @@ impl AntarcticalTray {
 
 impl ksni::Tray for AntarcticalTray {
     fn id(&self) -> String {
-        "com.korora.Antarctical".into()
+        "korora.tech.Antarctical".into()
     }
 
     fn title(&self) -> String {

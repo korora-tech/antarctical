@@ -1,4 +1,5 @@
-//! Settings: the Google OAuth client (stored in the keyring), the account, and preferences.
+//! Settings: an optional Google OAuth client of your own (stored in the keyring; otherwise the
+//! built-in client is used), the accounts, and preferences.
 //!
 //! The client secret is write-only from the UI's point of view: it goes to the sync worker,
 //! which stores it in the keyring; the field is cleared afterwards and never pre-filled.
@@ -164,9 +165,10 @@ impl Render for SettingsView {
 
         let client_card = card("Google OAuth client")
             .child(body_text(
-                "Antarctical connects to Google with an OAuth client that you own. Create one once; \
-                 the client ID and secret are stored only in your system keyring \
-                 (Secret Service: GNOME Keyring, KWallet, KeePassXC…).",
+                "Antarctical signs in with its own OAuth client, so there is nothing to set up. \
+                 To use a client you own instead, create one and save it here; its ID and secret \
+                 are stored only in your system keyring (Secret Service: GNOME Keyring, KWallet, \
+                 KeePassXC…). Switching clients signs out every account.",
             ))
             .child(
                 div()
@@ -234,7 +236,7 @@ impl Render for SettingsView {
                                         (_, true) => "Demo mode: kept in memory, not in the keyring".to_string(),
                                         (None, false) if auth == AuthState::Locked => "Keyring locked: unlock it and press Ctrl+R".to_string(),
                                         (Some(_), false) => "Client ID and secret are stored in the keyring".to_string(),
-                                        (None, false) => "Nothing stored yet".to_string(),
+                                        (None, false) => "Using the built-in client".to_string(),
                                     }),
                             ),
                     )
@@ -245,7 +247,7 @@ impl Render for SettingsView {
                             .when(stored_id.is_some(), |d| {
                                 d.child(button(
                                     "remove-client",
-                                    "Remove from keyring",
+                                    "Use built-in client",
                                     ButtonStyle::Danger,
                                     Some(self.send(cx, || Command::ClearClient)),
                                 ))
@@ -263,13 +265,12 @@ impl Render for SettingsView {
             let intro = match &auth {
                 AuthState::Starting => "Reading the keyring…",
                 AuthState::Locked => "The keyring is locked. Unlock it and press Ctrl+R.",
-                AuthState::NeedsClient => "Save an OAuth client above first.",
                 AuthState::Demo => "Demo mode: showing generated accounts.",
                 AuthState::Ready if accounts.is_empty() => {
-                    "No account yet. Each account gets read-only access; its refresh token is kept in the keyring."
+                    "No account yet. Each account's refresh token is kept in the keyring."
                 }
                 AuthState::Ready => {
-                    "Read-only access. Each account's refresh token is kept in the keyring; removing an account revokes it."
+                    "Each account's refresh token is kept in the keyring; removing an account revokes it."
                 }
             };
             let can_add = auth == AuthState::Ready;
