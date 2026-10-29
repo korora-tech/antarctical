@@ -50,6 +50,29 @@ pub fn event_time_on(e: &Event, date: Date, tz: &TimeZone, clock_24h: bool) -> S
     }
 }
 
+/// Agenda time column for `e` on `date`: (main line, optional second line), or None when
+/// the row should read "All day". Mirrors [`event_time_on`].
+pub fn event_time_parts_on(
+    e: &Event,
+    date: Date,
+    tz: &TimeZone,
+    clock_24h: bool,
+) -> Option<(String, Option<String>)> {
+    let When::Timed { .. } = e.when else {
+        return None;
+    };
+    let (s, en) = (e.start_zoned(tz), e.end_zoned(tz));
+    let ends_later = en.date() > date
+        && !(en.date() == model::add_days(date, 1) && en.hour() == 0 && en.minute() == 0);
+    match (s.date() < date, ends_later) {
+        (false, false) if s == en => Some((time(&s, clock_24h), None)),
+        (false, false) => Some((time(&s, clock_24h), Some(time(&en, clock_24h)))),
+        (true, false) => Some((time(&en, clock_24h), Some("Ends".into()))),
+        (false, true) => Some((time(&s, clock_24h), Some("Starts".into()))),
+        (true, true) => None,
+    }
+}
+
 /// Full description of when an event happens, for the detail panel.
 pub fn event_when_long(e: &Event, tz: &TimeZone, clock_24h: bool) -> String {
     match e.when {
@@ -88,42 +111,41 @@ pub fn event_when_long(e: &Event, tz: &TimeZone, clock_24h: bool) -> String {
     }
 }
 
-pub fn view_title(view: ViewMode, anchor: Date) -> String {
+/// The header title as (strong, light): the bold part says what is shown, the light part when.
+pub fn view_title_parts(view: ViewMode, anchor: Date) -> (String, String) {
+    let year = |d: Date| d.strftime("%Y").to_string();
     match view {
-        ViewMode::Month => anchor.strftime("%B %Y").to_string(),
+        ViewMode::Month => (anchor.strftime("%B").to_string(), year(anchor)),
         ViewMode::Week => {
             let start = model::week_start(anchor);
             let end = model::add_days(start, 6);
-            if start.month() == end.month() {
-                format!("{} – {}", start.strftime("%-d"), end.strftime("%-d %B %Y"))
-            } else if start.year() == end.year() {
-                format!(
-                    "{} – {}",
-                    start.strftime("%-d %b"),
-                    end.strftime("%-d %b %Y")
-                )
+            let strong = if start.month() == end.month() {
+                format!("{} – {}", start.strftime("%-d"), end.strftime("%-d %B"))
             } else {
-                format!(
-                    "{} – {}",
-                    start.strftime("%-d %b %Y"),
-                    end.strftime("%-d %b %Y")
-                )
-            }
+                format!("{} – {}", start.strftime("%-d %b"), end.strftime("%-d %b"))
+            };
+            let light = if start.year() == end.year() {
+                year(end)
+            } else {
+                format!("{} – {}", year(start), year(end))
+            };
+            (strong, light)
         }
-        ViewMode::Day => anchor.strftime("%A, %-d %B %Y").to_string(),
-        ViewMode::Agenda => format!("From {}", anchor.strftime("%-d %B %Y")),
+        ViewMode::Day => (anchor.strftime("%A, %-d %B").to_string(), year(anchor)),
+        ViewMode::Agenda => (format!("From {}", anchor.strftime("%-d %B")), year(anchor)),
     }
 }
 
-pub fn hour_label(hour: i8, clock_24h: bool) -> String {
+/// The gutter label for `hour`, split into the numeral and its AM/PM suffix.
+pub fn hour_label_parts(hour: i8, clock_24h: bool) -> (String, Option<&'static str>) {
     if clock_24h {
-        format!("{hour:02}:00")
+        (format!("{hour:02}:00"), None)
     } else {
         match hour {
-            0 => "12am".into(),
-            12 => "12pm".into(),
-            h if h < 12 => format!("{h}am"),
-            h => format!("{}pm", h - 12),
+            0 => ("12".into(), Some("AM")),
+            12 => ("12".into(), Some("PM")),
+            h if h < 12 => (format!("{h}"), Some("AM")),
+            h => (format!("{}", h - 12), Some("PM")),
         }
     }
 }
@@ -135,21 +157,30 @@ mod tests {
 
     #[test]
     fn titles() {
+        let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
         assert_eq!(
-            view_title(ViewMode::Month, date(2026, 10, 21)),
-            "October 2026"
+            view_title_parts(ViewMode::Month, date(2026, 10, 21)),
+            pair("October", "2026")
         );
         assert_eq!(
-            view_title(ViewMode::Week, date(2026, 10, 21)),
-            "19 – 25 October 2026"
+            view_title_parts(ViewMode::Week, date(2026, 10, 21)),
+            pair("19 – 25 October", "2026")
         );
         assert_eq!(
-            view_title(ViewMode::Week, date(2026, 9, 30)),
-            "28 Sep – 4 Oct 2026"
+            view_title_parts(ViewMode::Week, date(2026, 9, 30)),
+            pair("28 Sep – 4 Oct", "2026")
         );
         assert_eq!(
-            view_title(ViewMode::Week, date(2026, 12, 31)),
-            "28 Dec 2026 – 3 Jan 2027"
+            view_title_parts(ViewMode::Week, date(2026, 12, 31)),
+            pair("28 Dec – 3 Jan", "2026 – 2027")
+        );
+        assert_eq!(
+            view_title_parts(ViewMode::Day, date(2026, 10, 29)),
+            pair("Thursday, 29 October", "2026")
+        );
+        assert_eq!(
+            view_title_parts(ViewMode::Agenda, date(2026, 10, 29)),
+            pair("From 29 October", "2026")
         );
     }
 
@@ -185,13 +216,97 @@ mod tests {
     }
 
     #[test]
+    fn agenda_time_parts() {
+        let tz = TimeZone::UTC;
+        let timed = |start: &str, end: &str| Event {
+            id: "e".into(),
+            calendar_id: "c".into(),
+            title: "t".into(),
+            when: When::Timed {
+                start: start.parse().unwrap(),
+                end: end.parse().unwrap(),
+            },
+            color: None,
+            location: None,
+            description: None,
+            html_link: None,
+            meet_link: None,
+            organizer: None,
+            attendees: vec![],
+            reminders: vec![],
+            tentative: false,
+        };
+        let some = |a: &str, b: Option<&str>| Some((a.to_string(), b.map(String::from)));
+        let d21 = date(2026, 10, 21);
+
+        let e = timed("2026-10-21T09:30:00Z", "2026-10-21T10:00:00Z");
+        assert_eq!(
+            event_time_parts_on(&e, d21, &tz, true),
+            some("09:30", Some("10:00"))
+        );
+        assert_eq!(
+            event_time_parts_on(&e, d21, &tz, false),
+            some("9:30am", Some("10am"))
+        );
+
+        let e = timed("2026-10-21T23:00:00Z", "2026-10-22T00:00:00Z");
+        assert_eq!(
+            event_time_parts_on(&e, d21, &tz, true),
+            some("23:00", Some("00:00"))
+        );
+
+        let e = timed("2026-10-21T23:00:00Z", "2026-10-22T00:30:00Z");
+        assert_eq!(
+            event_time_parts_on(&e, d21, &tz, true),
+            some("23:00", Some("Starts"))
+        );
+        assert_eq!(
+            event_time_parts_on(&e, date(2026, 10, 22), &tz, true),
+            some("00:30", Some("Ends"))
+        );
+
+        let e = timed("2026-10-21T09:00:00Z", "2026-10-23T17:00:00Z");
+        assert_eq!(event_time_parts_on(&e, date(2026, 10, 22), &tz, true), None);
+
+        let e = timed("2026-10-21T09:00:00Z", "2026-10-21T09:00:00Z");
+        assert_eq!(event_time_parts_on(&e, d21, &tz, true), some("09:00", None));
+
+        let mut e = e;
+        e.when = When::AllDay {
+            start: d21,
+            end: date(2026, 10, 22),
+        };
+        assert_eq!(event_time_parts_on(&e, d21, &tz, true), None);
+    }
+
+    #[test]
     fn twelve_hour_times() {
         let tz = TimeZone::UTC;
         let z = |s: &str| s.parse::<jiff::Timestamp>().unwrap().to_zoned(tz.clone());
         assert_eq!(time(&z("2026-10-21T09:30:00Z"), false), "9:30am");
         assert_eq!(time(&z("2026-10-21T15:00:00Z"), false), "3pm");
         assert_eq!(time(&z("2026-10-21T15:00:00Z"), true), "15:00");
-        assert_eq!(hour_label(0, false), "12am");
-        assert_eq!(hour_label(13, false), "1pm");
+        assert_eq!(hour_label_parts(0, false), (String::from("12"), Some("AM")));
+        assert_eq!(hour_label_parts(13, false), (String::from("1"), Some("PM")));
+    }
+
+    #[test]
+    fn hour_label_parts_modes() {
+        let twelve = [
+            (0, "12", "AM"),
+            (9, "9", "AM"),
+            (12, "12", "PM"),
+            (13, "1", "PM"),
+        ];
+        for (h, num, suffix) in twelve {
+            assert_eq!(
+                hour_label_parts(h, false),
+                (String::from(num), Some(suffix))
+            );
+        }
+        let full = [(0, "00:00"), (9, "09:00"), (12, "12:00"), (13, "13:00")];
+        for (h, num) in full {
+            assert_eq!(hour_label_parts(h, true), (String::from(num), None));
+        }
     }
 }

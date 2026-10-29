@@ -14,11 +14,14 @@ use jiff::tz::TimeZone;
 use super::format;
 use super::settings::{SettingsEvent, SettingsView};
 use super::theme::{
-    ACCENT, AMBER, BG, BORDER, CAPTION, DETAIL_W, DISABLED, GREEN, HEADER, HOVER, MUTED, PANEL,
-    PANEL_RAISED, RED, SECONDARY, SELECTED, SELECTED_BORDER, SIDEBAR, SIDEBAR_W, TEXT,
+    ACCENT, AMBER, BG, BORDER, CAL_ROW_H, CAPTION, CONTROL_H, DETAIL_ACTION_H, DETAIL_HEADER_TINT,
+    DETAIL_HEADER_TINT_DECLINED, DETAIL_ICON_W, DETAIL_STRIP_H, DETAIL_W, DISABLED, GREEN,
+    GRID_LINE, HEADER, HEADER_H, HOVER, MUTED, ON_ACCENT, PANEL, PANEL_RAISED, RED, SECONDARY,
+    SEGMENT_W, SELECTED, SELECTED_BORDER, SIDEBAR, SIDEBAR_W, TEXT, TITLE_PX, tint,
 };
 use super::widgets::{
-    ButtonStyle, OnClick, body_text, button, caption, card, checkbox_row, ghost_button, segment,
+    ButtonStyle, OnClick, body_text, button, calendar_toggle_row, card, chevron_segment,
+    control_group, ghost_button, link, segment,
 };
 use super::{
     Back, CloseWindow, Next, OpenSettings, Previous, Quit, Refresh, ShowAgenda, ShowDay, ShowMonth,
@@ -254,8 +257,9 @@ impl MainView {
             ("seg-day", "Day", ViewMode::Day),
             ("seg-agenda", "Agenda", ViewMode::Agenda),
         ];
+        let (strong, light) = format::view_title_parts(self.view, self.anchor);
         div()
-            .h(px(64.0))
+            .h(px(HEADER_H))
             .w_full()
             .flex_shrink_0()
             .flex()
@@ -271,93 +275,119 @@ impl MainView {
                     .flex()
                     .items_center()
                     .gap_3()
+                    .flex_1()
                     .min_w(px(0.0))
                     .child(branding::icon(36.0))
                     .child(
                         div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_size(px(14.0))
-                            .text_color(rgb(TEXT))
+                            .flex_shrink_0()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_size(px(13.0))
+                            .text_color(rgb(SECONDARY))
                             .child("antarctical"),
                     )
                     .when(in_calendar, |d| {
-                        d.child(div().w(px(1.0)).h(px(26.0)).bg(rgb(BORDER)))
+                        // Navigation comes before the title so it stays put as the title changes.
+                        d.child(div().flex_shrink_0().w(px(1.0)).h(px(26.0)).bg(rgb(BORDER)))
+                            .child(
+                                control_group()
+                                    .child(chevron_segment(
+                                        "prev",
+                                        "‹",
+                                        self.listener_click(cx, |this, _, cx| this.step(-1, cx)),
+                                    ))
+                                    .child(
+                                        segment(
+                                            "today",
+                                            "Today",
+                                            false,
+                                            Some(self.listener_click(cx, |this, _, cx| {
+                                                this.set_anchor(Zoned::now().date(), cx);
+                                                this.pending_grid_scroll = true;
+                                            })),
+                                        )
+                                        .w(px(SEGMENT_W)),
+                                    )
+                                    .child(chevron_segment(
+                                        "next",
+                                        "›",
+                                        self.listener_click(cx, |this, _, cx| this.step(1, cx)),
+                                    )),
+                            )
+                            // Both runs must stay the same size: items_baseline falls back to the
+                            // bottom edge for text leaves. Only the strong run truncates.
                             .child(
                                 div()
-                                    .text_size(px(19.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(rgb(TEXT))
-                                    .child(format::view_title(self.view, self.anchor)),
+                                    .flex()
+                                    .items_baseline()
+                                    .gap(px(7.0))
+                                    .min_w(px(0.0))
+                                    .flex_shrink_1()
+                                    .line_height(px(28.0))
+                                    .text_size(px(TITLE_PX))
+                                    .child(
+                                        div()
+                                            .min_w(px(0.0))
+                                            .truncate()
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(rgb(TEXT))
+                                            .child(strong),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_shrink_0()
+                                            .whitespace_nowrap()
+                                            .font_weight(FontWeight::NORMAL)
+                                            .text_color(rgb(CAPTION))
+                                            .child(light),
+                                    ),
                             )
-                            .child(ghost_button(
-                                "prev",
-                                "‹",
-                                Some(self.listener_click(cx, |this, _, cx| this.step(-1, cx))),
-                            ))
-                            .child(ghost_button(
-                                "next",
-                                "›",
-                                Some(self.listener_click(cx, |this, _, cx| this.step(1, cx))),
-                            ))
-                            .child(button(
-                                "today",
-                                "Today",
-                                ButtonStyle::Secondary,
-                                Some(self.listener_click(cx, |this, _, cx| {
-                                    this.set_anchor(Zoned::now().date(), cx);
-                                    this.pending_grid_scroll = true;
-                                })),
-                            ))
                     }),
             )
             .child(
                 div()
                     .flex()
+                    .flex_shrink_0()
                     .items_center()
-                    .gap_2()
+                    .gap(px(10.0))
                     .when(in_calendar, |d| {
-                        d.child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_1()
-                                .rounded_lg()
-                                .border_1()
-                                .border_color(rgb(BORDER))
-                                .bg(rgb(BG))
-                                .p(px(3.0))
-                                .children(view_tabs.into_iter().map(|(id, label, mode)| {
-                                    segment(
-                                        id,
-                                        label,
-                                        self.view == mode,
-                                        self.listener_click(cx, move |this, _, cx| {
-                                            this.set_view(mode, cx)
-                                        }),
-                                    )
-                                })),
-                        )
+                        d.child(control_group().children(view_tabs.into_iter().map(
+                            |(id, label, mode)| {
+                                segment(
+                                    id,
+                                    label,
+                                    self.view == mode,
+                                    Some(self.listener_click(cx, move |this, _, cx| {
+                                        this.set_view(mode, cx)
+                                    })),
+                                )
+                                .w(px(SEGMENT_W))
+                            },
+                        )))
                     })
-                    .child(button(
-                        "settings",
-                        if in_calendar {
-                            "Settings"
-                        } else {
-                            "Back to calendar"
-                        },
-                        if in_calendar {
-                            ButtonStyle::Secondary
-                        } else {
-                            ButtonStyle::Primary
-                        },
-                        Some(self.listener_click(cx, |this, window, cx| {
-                            if this.screen == Screen::Settings {
-                                this.show_calendar(window, cx)
+                    .child(
+                        button(
+                            "settings",
+                            if in_calendar {
+                                "Settings"
                             } else {
-                                this.show_settings(window, cx)
-                            }
-                        })),
-                    )),
+                                "Back to calendar"
+                            },
+                            if in_calendar {
+                                ButtonStyle::Toolbar
+                            } else {
+                                ButtonStyle::Primary
+                            },
+                            Some(self.listener_click(cx, |this, window, cx| {
+                                if this.screen == Screen::Settings {
+                                    this.show_calendar(window, cx)
+                                } else {
+                                    this.show_settings(window, cx)
+                                }
+                            })),
+                        )
+                        .h(px(CONTROL_H)),
+                    ),
             )
     }
 
@@ -450,7 +480,7 @@ impl MainView {
                     .when(in_view, |s| s.bg(rgb(SELECTED)))
                     .when(is_today, |s| {
                         s.bg(rgb(ACCENT))
-                            .text_color(rgb(0x11111a))
+                            .text_color(rgb(ON_ACCENT))
                             .font_weight(FontWeight::BOLD)
                     })
                     .when(!is_today, |s| {
@@ -473,45 +503,49 @@ impl MainView {
         }
 
         // One group per account, headed by its email.
-        let calendars =
-            div()
-                .flex()
-                .flex_col()
-                .gap_3()
-                .children(
-                    store
-                        .calendars_by_account()
-                        .into_iter()
-                        .map(|(account, cals)| {
+        let calendars = div().flex().flex_col().gap(px(18.0)).children(
+            store
+                .calendars_by_account()
+                .into_iter()
+                .map(|(account, cals)| {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(0.0))
+                        .child(
                             div()
-                                .flex()
-                                .flex_col()
-                                .gap(px(1.0))
-                                .child(div().pb_1().child(caption(account.to_uppercase())))
-                                .children(cals.into_iter().map(|c| {
-                                    let id = c.id.clone();
-                                    checkbox_row(
-                                        SharedString::from(format!("cal-{}", c.id)),
-                                        // The primary calendar is named after its account,
-                                        // which already heads the group.
-                                        if c.primary {
-                                            "Primary".to_string()
-                                        } else {
-                                            c.name.clone()
-                                        },
-                                        c.color,
-                                        store.is_visible(c),
-                                        Some(self.listener_click(cx, move |this, _, cx| {
-                                            let id = id.clone();
-                                            this.store.update(cx, |s, cx| {
-                                                s.toggle_calendar(&id);
-                                                cx.notify();
-                                            });
-                                        })),
-                                    )
-                                }))
-                        }),
-                );
+                                .pl(px(8.0))
+                                .pb(px(4.0))
+                                .truncate()
+                                .text_size(px(11.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(rgb(CAPTION))
+                                .child(account.to_string()),
+                        )
+                        .children(cals.into_iter().map(|c| {
+                            let id = c.id.clone();
+                            calendar_toggle_row(
+                                SharedString::from(format!("cal-{}", c.id)),
+                                // The primary calendar is named after its account,
+                                // which already heads the group.
+                                if c.primary {
+                                    "Primary".to_string()
+                                } else {
+                                    c.name.clone()
+                                },
+                                c.color,
+                                store.is_visible(c),
+                                Some(self.listener_click(cx, move |this, _, cx| {
+                                    let id = id.clone();
+                                    this.store.update(cx, |s, cx| {
+                                        s.toggle_calendar(&id);
+                                        cx.notify();
+                                    });
+                                })),
+                            )
+                        }))
+                }),
+        );
 
         div()
             .w(px(SIDEBAR_W))
@@ -558,6 +592,13 @@ impl MainView {
             .child(grid)
             .child(
                 div()
+                    .mx(px(4.0))
+                    .h(px(1.0))
+                    .flex_shrink_0()
+                    .bg(rgb(GRID_LINE)),
+            )
+            .child(
+                div()
                     .id("calendar-list")
                     .flex_1()
                     .min_h(px(0.0))
@@ -580,6 +621,7 @@ impl MainView {
             (AuthState::Ready, [one]) => (GREEN, one.clone()),
             (AuthState::Ready, many) => (GREEN, format!("{} Google accounts", many.len())),
         };
+        let dot = if store.busy { AMBER } else { dot };
         let clock = store.prefs.clock_24h;
         let line2 = if store.busy {
             "Syncing…".to_string()
@@ -591,58 +633,58 @@ impl MainView {
         } else {
             String::new()
         };
+        // The 1px top border also sits inside the border box, hence the extra pixel.
         div()
             .flex()
-            .flex_col()
-            .gap_1()
-            .pt_3()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(8.0))
+            .h(px(CAL_ROW_H + 11.0))
+            .pt(px(10.0))
             .border_t_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(GRID_LINE))
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .size(px(7.0))
-                            .flex_shrink_0()
-                            .rounded_full()
-                            .bg(rgb(dot)),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .truncate()
-                            .text_size(px(11.0))
-                            .text_color(rgb(SECONDARY))
-                            .child(line1),
-                    ),
+                    .size(px(6.0))
+                    .flex_shrink_0()
+                    .rounded_full()
+                    .bg(rgb(dot)),
             )
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_size(px(10.0))
-                            .text_color(rgb(MUTED))
-                            .child(line2),
-                    )
-                    .when(store.signed_in(), |d| {
-                        d.child(ghost_button(
-                            "refresh",
-                            "Refresh",
-                            (!store.busy).then(|| {
-                                self.listener_click(cx, |this, _, cx| {
-                                    this.store.read(cx).send(Command::Refresh)
-                                })
-                            }),
-                        ))
-                    }),
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .truncate()
+                    .text_size(px(11.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(rgb(SECONDARY))
+                    .child(line1),
             )
+            .when(!line2.is_empty(), |d| {
+                d.child(
+                    div()
+                        .flex_shrink_0()
+                        .text_size(px(11.0))
+                        .text_color(rgb(CAPTION))
+                        .child(format!("· {line2}")),
+                )
+            })
+            .when(store.signed_in(), |d| {
+                d.child(
+                    ghost_button(
+                        "refresh",
+                        "Refresh",
+                        (!store.busy).then(|| {
+                            self.listener_click(cx, |this, _, cx| {
+                                this.store.read(cx).send(Command::Refresh)
+                            })
+                        }),
+                    )
+                    .px(px(6.0))
+                    .py(px(2.0))
+                    .text_size(px(11.0)),
+                )
+            })
     }
 
     /// What to show instead of a calendar when there is no data source yet.
@@ -720,58 +762,101 @@ impl MainView {
             .unwrap_or_default();
         let clock = store.prefs.clock_24h;
 
-        let row = |label: &'static str, value: String| {
+        let icon_row = |glyph: &'static str, glyph_color: u32, value: String| {
             div()
                 .flex()
-                .flex_col()
-                .gap(px(2.0))
-                .child(caption(label))
+                .items_start()
+                .gap(px(10.0))
                 .child(
                     div()
-                        .text_size(px(12.0))
-                        .line_height(px(18.0))
+                        .w(px(DETAIL_ICON_W))
+                        .flex_shrink_0()
+                        .text_size(px(13.0))
+                        .line_height(px(19.0))
+                        .text_color(rgb(glyph_color))
+                        .child(glyph),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .text_size(px(13.0))
+                        .line_height(px(19.0))
                         .text_color(rgb(SECONDARY))
                         .child(value),
                 )
         };
+        let open_url = |link: String| -> OnClick { Box::new(move |_, _, cx| cx.open_url(&link)) };
 
-        let mut body = div()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .child(row("WHEN", format::event_when_long(event, &tz, clock)))
-            .child(row("CALENDAR", cal_name));
+        // The reply control is only offered under the same conditions as before; when it is
+        // absent the current response is shown as a plain fact instead.
+        let reply_calendar = event
+            .replyable()
+            .then(|| {
+                store
+                    .calendar(&event.calendar_id)
+                    .filter(|calendar| store.reply_enabled(&calendar.account))
+                    .cloned()
+            })
+            .flatten();
+        let current = event.self_response();
+
+        let mut sections: Vec<Div> = Vec::new();
+
+        let mut facts = div().flex().flex_col().gap(px(10.0));
+        let mut has_facts = false;
         if let Some(loc) = &event.location {
-            body = body.child(row("WHERE", loc.clone()));
+            facts = facts.child(icon_row("◎", CAPTION, loc.clone()));
+            has_facts = true;
         }
-        if let Some(resp) = event.self_response() {
-            let text = match resp {
-                Response::Accepted => "You're going",
-                Response::Tentative => "You might go",
-                Response::Declined => "You declined",
-                Response::NeedsAction => "You haven't replied",
-            };
-            body = body.child(row("YOUR RESPONSE", text.into()));
+        if let Some(org) = &event.organizer {
+            facts = facts.child(icon_row("◉", CAPTION, format!("Organized by {org}")));
+            has_facts = true;
         }
-        if event.replyable()
-            && let Some(calendar) = store
-                .calendar(&event.calendar_id)
-                .filter(|calendar| store.reply_enabled(&calendar.account))
-                .cloned()
+        if reply_calendar.is_none()
+            && let Some(resp) = current
         {
-            let current = event.self_response();
+            let (mark, mark_color, text) = match resp {
+                Response::Accepted => ("✓", GREEN, "You're going"),
+                Response::Tentative => ("?", AMBER, "You might go"),
+                Response::Declined => ("✕", RED, "You declined"),
+                Response::NeedsAction => ("·", MUTED, "You haven't replied"),
+            };
+            facts = facts.child(icon_row(mark, mark_color, text.into()));
+            has_facts = true;
+        }
+        if let Some(link) = event.meet_link.clone() {
+            facts = facts.child(
+                button(
+                    "join",
+                    "Join video call",
+                    ButtonStyle::Primary,
+                    Some(open_url(link)),
+                )
+                .w_full()
+                .h(px(DETAIL_ACTION_H))
+                .when(has_facts, |d| d.mt(px(4.0))),
+            );
+            has_facts = true;
+        }
+        if has_facts {
+            sections.push(facts);
+        }
+
+        if let Some(calendar) = reply_calendar {
             let pending = store.reply_pending(&event.calendar_id, &event.id);
             let event_for_reply = Event::clone(event);
-            let buttons = [
-                ("rsvp-yes", "Yes", Response::Accepted),
-                ("rsvp-no", "No", Response::Declined),
+            let segments = [
+                ("rsvp-yes", "Going", Response::Accepted),
                 ("rsvp-maybe", "Maybe", Response::Tentative),
+                ("rsvp-no", "No", Response::Declined),
             ]
             .into_iter()
             .map(|(id, label, response)| {
                 let calendar = calendar.clone();
                 let event = event_for_reply.clone();
-                let on_click = (!pending && current != Some(response)).then(|| {
+                let active = current == Some(response);
+                let on_click = (!pending && !active).then(|| {
                     self.listener_click(cx, move |this, _, cx| {
                         this.store.update(cx, |store, cx| {
                             if store.reply_enabled(&calendar.account)
@@ -791,36 +876,68 @@ impl MainView {
                         });
                     })
                 });
-                button(
-                    id,
-                    label,
-                    if current == Some(response) {
-                        ButtonStyle::Primary
-                    } else {
-                        ButtonStyle::Secondary
-                    },
-                    on_click,
-                )
+                // The active answer takes its guest-mark colour so the state reads at a glance.
+                let answer_color = match response {
+                    Response::Accepted => GREEN,
+                    Response::Tentative => AMBER,
+                    _ => RED,
+                };
+                segment(id, label, active, on_click)
+                    .flex_1()
+                    .when(active, |d| d.text_color(rgb(answer_color)))
             });
-            body = body.child(
+            let unanswered = matches!(current, None | Some(Response::NeedsAction));
+            sections.push(
                 div()
                     .flex()
                     .flex_col()
-                    .gap_2()
-                    .child(caption("REPLY TO INVITATION"))
-                    .child(div().flex().gap_2().children(buttons)),
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .flex()
+                            .items_baseline()
+                            .justify_between()
+                            .gap(px(8.0))
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(rgb(SECONDARY))
+                                    .child("Going?"),
+                            )
+                            .when(unanswered, |d| {
+                                d.child(
+                                    div()
+                                        .text_size(px(12.0))
+                                        .text_color(rgb(MUTED))
+                                        .child("You haven't replied"),
+                                )
+                            }),
+                    )
+                    .child(
+                        control_group()
+                            .w_full()
+                            .when(pending, |d| d.opacity(0.6))
+                            .children(segments),
+                    ),
             );
         }
-        if let Some(org) = &event.organizer {
-            body = body.child(row("ORGANIZER", org.clone()));
-        }
+
         if !event.attendees.is_empty() {
-            body = body.child(
+            let hidden = event.attendees.len().saturating_sub(50);
+            sections.push(
                 div()
                     .flex()
                     .flex_col()
-                    .gap_1()
-                    .child(caption(format!("GUESTS · {}", event.attendees.len())))
+                    .gap(px(2.0))
+                    .child(
+                        div()
+                            .mb(px(4.0))
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(rgb(SECONDARY))
+                            .child(format!("Guests · {}", event.attendees.len())),
+                    )
                     .children(event.attendees.iter().take(50).map(|a| {
                         let (mark, mark_color) = match a.response {
                             Response::Accepted => ("✓", GREEN),
@@ -829,9 +946,10 @@ impl MainView {
                             Response::NeedsAction => ("·", MUTED),
                         };
                         div()
+                            .h(px(24.0))
                             .flex()
                             .items_center()
-                            .gap_2()
+                            .gap(px(8.0))
                             .child(
                                 div()
                                     .w(px(12.0))
@@ -853,30 +971,51 @@ impl MainView {
                                         if a.organizer { " (organizer)" } else { "" }
                                     )),
                             )
-                    })),
+                    }))
+                    .when(hidden > 0, |d| {
+                        d.child(
+                            div()
+                                .h(px(24.0))
+                                .flex()
+                                .items_center()
+                                .text_size(px(12.0))
+                                .text_color(rgb(MUTED))
+                                .child(format!("+{hidden} more")),
+                        )
+                    }),
             );
         }
         if let Some(desc) = &event.description {
-            body = body.child(row("DESCRIPTION", desc.clone()));
+            sections.push(icon_row("≡", CAPTION, desc.clone()));
         }
-
-        let mut actions = div().flex().flex_wrap().gap_2();
-        if let Some(link) = event.meet_link.clone() {
-            actions = actions.child(button(
-                "join",
-                "Join video call",
-                ButtonStyle::Primary,
-                Some(Box::new(move |_, _, cx| cx.open_url(&link))),
-            ));
-        }
-        if let Some(link) = event.html_link.clone() {
-            actions = actions.child(button(
+        if let Some(url) = event.html_link.clone() {
+            sections.push(div().flex().child(link(
                 "open-google",
                 "Open in Google Calendar",
-                ButtonStyle::Secondary,
-                Some(Box::new(move |_, _, cx| cx.open_url(&link))),
-            ));
+                open_url(url),
+            )));
         }
+
+        // Dividers only between sections that are actually rendered.
+        let mut body = Vec::with_capacity(sections.len() * 2);
+        for (i, section) in sections.into_iter().enumerate() {
+            if i > 0 {
+                body.push(div().h(px(1.0)).w_full().my(px(4.0)).bg(rgb(GRID_LINE)));
+            }
+            body.push(section);
+        }
+
+        let declined = event.declined();
+        let header_tint = if declined {
+            DETAIL_HEADER_TINT_DECLINED
+        } else {
+            DETAIL_HEADER_TINT
+        };
+        let (strip, dot) = if declined {
+            (MUTED, tint(color, PANEL, 0.5))
+        } else {
+            (color, color)
+        };
 
         Some(
             div()
@@ -891,37 +1030,83 @@ impl MainView {
                 .child(
                     div()
                         .flex()
-                        .items_start()
-                        .gap_3()
-                        .p_4()
+                        .flex_col()
+                        .flex_shrink_0()
+                        .bg(rgb(tint(color, PANEL, header_tint)))
                         .border_b_1()
                         .border_color(rgb(BORDER))
+                        .child(div().w_full().h(px(DETAIL_STRIP_H)).bg(rgb(strip)))
                         .child(
                             div()
-                                .mt(px(4.0))
-                                .size(px(12.0))
-                                .flex_shrink_0()
-                                .rounded_sm()
-                                .bg(rgb(color)),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .text_size(px(16.0))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(rgb(TEXT))
-                                .when(event.declined(), |d| d.line_through())
-                                .child(event.title.clone()),
-                        )
-                        .child(ghost_button(
-                            "close-detail",
-                            "✕",
-                            Some(self.listener_click(cx, |this, _, cx| {
-                                this.selected = None;
-                                cx.notify();
-                            })),
-                        )),
+                                .pt(px(18.0))
+                                .px(px(18.0))
+                                .pb(px(16.0))
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_start()
+                                        .gap(px(8.0))
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w(px(0.0))
+                                                .text_size(px(18.0))
+                                                .line_height(px(24.0))
+                                                .font_weight(FontWeight::BOLD)
+                                                .text_color(rgb(TEXT))
+                                                .when(declined, |d| d.line_through())
+                                                .child(event.title.clone()),
+                                        )
+                                        .child(
+                                            ghost_button(
+                                                "close-detail",
+                                                "✕",
+                                                Some(self.listener_click(cx, |this, _, cx| {
+                                                    this.selected = None;
+                                                    cx.notify();
+                                                })),
+                                            )
+                                            .flex_shrink_0()
+                                            .size(px(24.0))
+                                            .px(px(0.0))
+                                            .py(px(0.0))
+                                            .text_color(rgb(MUTED)),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .mt(px(6.0))
+                                        .text_size(px(13.0))
+                                        .line_height(px(18.0))
+                                        .text_color(rgb(SECONDARY))
+                                        .child(format::event_when_long(event, &tz, clock)),
+                                )
+                                .child(
+                                    div()
+                                        .mt(px(4.0))
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(6.0))
+                                        .child(
+                                            div()
+                                                .size(px(6.0))
+                                                .flex_shrink_0()
+                                                .rounded_full()
+                                                .bg(rgb(dot)),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w(px(0.0))
+                                                .truncate()
+                                                .text_size(px(12.0))
+                                                .text_color(rgb(MUTED))
+                                                .child(cal_name),
+                                        ),
+                                ),
+                        ),
                 )
                 .child(
                     div()
@@ -930,12 +1115,11 @@ impl MainView {
                         .min_h(px(0.0))
                         .overflow_y_scroll()
                         .track_scroll(&self.detail_scroll)
-                        .p_4()
+                        .p(px(18.0))
                         .flex()
                         .flex_col()
-                        .gap_4()
-                        .child(actions)
-                        .child(body),
+                        .gap(px(14.0))
+                        .children(body),
                 ),
         )
     }
