@@ -45,9 +45,9 @@ pub struct Store {
     pub last_sync: Option<Timestamp>,
     /// Current sync or authentication problem shown in the UI.
     pub problem: Option<String>,
-    /// Transient notice and the instant at which it should expire.
     /// Account that needs RSVP authorization again after a missing-scope response.
     pub rsvp_reauth: Option<String>,
+    /// Transient notice and the instant at which it should expire.
     pub notice: Option<(String, Instant)>,
     /// User preferences applied to the current UI state.
     pub prefs: Prefs,
