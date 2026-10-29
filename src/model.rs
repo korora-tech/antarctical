@@ -77,7 +77,7 @@ pub enum Response {
 /// A person listed on an event invitation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Attendee {
-    /// Display name, when supplied by Google.
+    /// Display name, falling back to the email address or an empty string.
     pub name: String,
     /// Email address used to identify the attendee.
     pub email: String,
@@ -85,7 +85,8 @@ pub struct Attendee {
     pub response: Response,
     /// Whether Google identifies this attendee as the organizer.
     pub organizer: bool,
-    /// Whether this attendee is the signed-in user.
+    /// Whether Google identifies this attendee as the user for this event copy.
+    /// On a shared calendar, this may differ from the signed-in account.
     pub is_self: bool,
 }
 
