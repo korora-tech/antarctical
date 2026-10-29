@@ -12,20 +12,21 @@ use jiff::{Timestamp, Zoned};
 use super::format;
 use super::main_view::{AGENDA_DAYS, MainView};
 use super::theme::{
-    ACCENT, ACCENT_TEXT, AGENDA_DAY_LINE_H, AGENDA_DAY_PX, AGENDA_GUTTER_W, AGENDA_MAX_W,
-    AGENDA_RADIUS, AGENDA_ROW_H, AGENDA_SECTION_GAP, AGENDA_TIME_W, ALL_DAY_BAR_W, ALL_DAY_FILL,
-    ALL_DAY_FILL_DECLINED, ALL_DAY_FILL_HOVER, BG, BORDER, CAPTION, CHIP_TIME_W_12H,
-    CHIP_TIME_W_24H, DAY_HEADER_GAP, DAY_HEADER_H, DAY_HEADER_NUM_PX, DAY_HEADER_PAD,
-    DECLINED_BAR_OPACITY, DISABLED, EVENT_BAR_DECLINED, EVENT_BAR_INSET, EVENT_BAR_W, EVENT_FILL,
-    EVENT_FILL_DECLINED, EVENT_FILL_DECLINED_HOVER, EVENT_FILL_HOVER, EVENT_FILL_SELECTED,
-    EVENT_GUTTER_L, EVENT_GUTTER_R, EVENT_LINE_H, EVENT_META_LINE_H, EVENT_META_PX,
-    EVENT_OVERLAP_GAP, EVENT_PAD_X, EVENT_RADIUS, EVENT_TITLE_PX, GRID_LINE, HEADER_H,
-    HOUR_LABEL_LINE_H, HOUR_PX, HOVER, MONTH_DAY_DISC, MONTH_DAY_PX, MUTED, NOW_DOT, NOW_LINE,
-    NOW_LINE_FAINT, NOW_PILL_CLEARANCE, NOW_PILL_H, NOW_PILL_TEXT, ON_ACCENT, OUTSIDE, PANEL,
-    PAST_CAPTION, PAST_DAY_TEXT, PAST_HOVER_OPACITY, PAST_OPACITY, SECONDARY, SELECTED, TEXT,
-    TODAY_BG, TODAY_DISC, TODAY_HEADER_BG, TODAY_HOVER, WEEKDAY_HEADER_H, WEEKEND_BG, event_ring,
-    event_subtext, event_text, tabular, tint,
+    ACCENT, ACCENT_TEXT, AGENDA_DAY_LINE_H, AGENDA_DAY_PX, AGENDA_GUTTER_MIN_W, AGENDA_GUTTER_W,
+    AGENDA_HEADER_LINE_H, AGENDA_PAD_X, AGENDA_PAD_X_STACKED, AGENDA_RADIUS, AGENDA_ROW_H,
+    AGENDA_SECTION_GAP, AGENDA_TIME_W, ALL_DAY_BAR_W, ALL_DAY_FILL, ALL_DAY_FILL_DECLINED,
+    ALL_DAY_FILL_HOVER, BG, BORDER, CAPTION, CHIP_TIME_W_12H, CHIP_TIME_W_24H, DAY_HEADER_GAP,
+    DAY_HEADER_H, DAY_HEADER_NUM_PX, DAY_HEADER_PAD, DECLINED_BAR_OPACITY, DISABLED,
+    EVENT_BAR_DECLINED, EVENT_BAR_INSET, EVENT_BAR_W, EVENT_FILL, EVENT_FILL_DECLINED,
+    EVENT_FILL_DECLINED_HOVER, EVENT_FILL_HOVER, EVENT_FILL_SELECTED, EVENT_GUTTER_L,
+    EVENT_GUTTER_R, EVENT_LINE_H, EVENT_META_PX, EVENT_OVERLAP_GAP, EVENT_PAD_X, EVENT_RADIUS,
+    GRID_LINE, HEADER_H, HOUR_LABEL_LINE_H, HOUR_PX, HOVER, MONTH_DAY_DISC, MONTH_DAY_PX, MUTED,
+    NOW_DOT, NOW_LINE, NOW_LINE_FAINT, NOW_PILL_CLEARANCE, NOW_PILL_H, NOW_PILL_TEXT, ON_ACCENT,
+    OUTSIDE, PANEL, PAST_CAPTION, PAST_DAY_TEXT, PAST_HOVER_OPACITY, PAST_OPACITY, SECONDARY,
+    SELECTED, TEXT, TODAY_BG, TODAY_DISC, TODAY_HEADER_BG, TODAY_HOVER, WEEKDAY_HEADER_H,
+    WEEKEND_BG, event_ring, event_subtext, event_text, tabular, tint,
 };
+use super::widgets::EventText;
 use crate::layout;
 use crate::model;
 use crate::model::Event;
@@ -796,13 +797,6 @@ impl MainView {
                 } else {
                     half_gap
                 };
-                let title = div()
-                    .text_size(px(EVENT_TITLE_PX))
-                    .line_height(px(EVENT_LINE_H))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(title_color))
-                    .when(declined, |s| s.line_through())
-                    .child(e.title.clone());
                 col = col.child(
                     div()
                         .id(SharedString::from(format!(
@@ -863,11 +857,22 @@ impl MainView {
                                                         .items_center()
                                                         .gap(px(EVENT_PAD_X))
                                                         .line_height(px(EVENT_LINE_H))
+                                                        // A definite height: EventText has no
+                                                        // size of its own.
                                                         .child(
-                                                            title
+                                                            div()
                                                                 .flex_1()
                                                                 .min_w(px(0.0))
-                                                                .truncate(),
+                                                                .h(px(EVENT_LINE_H))
+                                                                .child(EventText::new(
+                                                                    e.title.clone(),
+                                                                    title_color,
+                                                                    declined,
+                                                                    Vec::new(),
+                                                                    None,
+                                                                    meta_color,
+                                                                    Some(1),
+                                                                )),
                                                         )
                                                         .when_some(start_label, |s, label| {
                                                             s.child(
@@ -883,33 +888,20 @@ impl MainView {
                                                         }),
                                                 )
                                             } else {
-                                                // Up to 46px one title line, so the time stays;
-                                                // it must not shrink when a narrow time wraps.
-                                                s.child(title.when(height <= 46.0, |s| {
-                                                    s.flex_shrink_0().truncate()
-                                                }))
+                                                // Rows are budgeted from the laid-out height.
+                                                s.child(EventText::new(
+                                                    e.title.clone(),
+                                                    title_color,
+                                                    declined,
+                                                    format::event_time_options_on(e, d, &tz, clock)
+                                                        .into_iter()
+                                                        .map(SharedString::from)
+                                                        .collect(),
+                                                    e.location.clone().map(SharedString::from),
+                                                    meta_color,
+                                                    None,
+                                                ))
                                             }
-                                        })
-                                        .when(height > 30.0, |s| {
-                                            s.child(
-                                                div()
-                                                    .text_size(px(EVENT_META_PX))
-                                                    .line_height(px(EVENT_META_LINE_H))
-                                                    .font_weight(FontWeight::MEDIUM)
-                                                    .font_features(tabular())
-                                                    .text_color(rgb(meta_color))
-                                                    .child(format::event_time_on(e, d, &tz, clock)),
-                                            )
-                                        })
-                                        .when(height > 46.0 && e.location.is_some(), |s| {
-                                            s.child(
-                                                div()
-                                                    .text_size(px(EVENT_META_PX))
-                                                    .line_height(px(EVENT_META_LINE_H))
-                                                    .text_color(rgb(meta_color))
-                                                    .truncate()
-                                                    .child(e.location.clone().unwrap_or_default()),
-                                            )
                                         })
                                         // Last, so the ring paints over the text; absolute, so
                                         // selecting moves nothing.
@@ -981,7 +973,12 @@ impl MainView {
             .into_any_element()
     }
 
-    pub(super) fn agenda_view(&mut self, store: &Store, cx: &Context<Self>) -> AnyElement {
+    pub(super) fn agenda_view(
+        &mut self,
+        store: &Store,
+        content_w: f32,
+        cx: &Context<Self>,
+    ) -> AnyElement {
         let tz = TimeZone::system();
         let now = Zoned::now();
         let today = now.date();
@@ -989,10 +986,14 @@ impl MainView {
         let clock = store.prefs.clock_24h;
         let to = model::add_days(self.anchor, AGENDA_DAYS);
         let events = store.events_between(self.anchor, to, &tz);
+        let stacked = agenda_layout(content_w) == AgendaLayout::Stacked;
         let mut list = div()
             .w_full()
-            .max_w(px(AGENDA_MAX_W))
-            .px_6()
+            .px(px(if stacked {
+                AGENDA_PAD_X_STACKED
+            } else {
+                AGENDA_PAD_X
+            }))
             .py(px(AGENDA_SECTION_GAP))
             .flex()
             .flex_col()
@@ -1176,14 +1177,21 @@ impl MainView {
                                     ),
                             )
                     }));
-                list = list.child(
+                let section = if stacked {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(agenda_day_header(d, today, cx))
+                        .child(group)
+                } else {
                     div()
                         .flex()
                         .items_start()
                         .gap_4()
                         .child(gutter)
-                        .child(group),
-                );
+                        .child(group)
+                };
+                list = list.child(section);
             }
             d = model::add_days(d, 1);
         }
@@ -1206,7 +1214,87 @@ impl MainView {
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.agenda_scroll)
-            .child(div().w_full().flex().justify_center().child(list))
+            .child(list)
             .into_any_element()
+    }
+}
+
+/// How the agenda lays out a day: date gutter beside the card, or a header above it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AgendaLayout {
+    Stacked,
+    Gutter,
+}
+
+/// Panes narrower than AGENDA_GUTTER_MIN_W stack the date above each day's card.
+fn agenda_layout(content_w: f32) -> AgendaLayout {
+    if content_w < AGENDA_GUTTER_MIN_W {
+        AgendaLayout::Stacked
+    } else {
+        AgendaLayout::Gutter
+    }
+}
+
+/// The stacked agenda's day header: relative label first, then the date; clicking opens the day.
+fn agenda_day_header(d: Date, today: Date, cx: &Context<MainView>) -> Stateful<Div> {
+    let date_text = d.strftime("%a %-d %b").to_string();
+    // Unlike the gutter's MUTED 'Tomorrow' caption, every stacked day label is SEMIBOLD TEXT
+    // and only the date after a relative label is MUTED; the difference is deliberate.
+    let label = |text: String, color: u32| {
+        div()
+            .whitespace_nowrap()
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(rgb(color))
+            .child(text)
+    };
+    let date = |text: String| {
+        div()
+            .whitespace_nowrap()
+            .font_features(tabular())
+            .text_color(rgb(MUTED))
+            .child(text)
+    };
+    let header = div()
+        .id(SharedString::from(format!("ag-day-{d}")))
+        .flex()
+        .items_baseline()
+        .gap(px(6.0))
+        .px(px(6.0))
+        .py(px(4.0))
+        .mb(px(8.0))
+        .rounded_md()
+        // All runs share one size and line box: items_baseline falls back to the bottom edge for text leaves.
+        .text_size(px(13.0))
+        .line_height(px(AGENDA_HEADER_LINE_H))
+        .cursor_pointer()
+        .hover(|s| s.bg(rgb(HOVER)))
+        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open_day(d, cx)));
+    if d == today {
+        // ACCENT: 6.83:1 on BG, 5.04:1 on HOVER; the only accent run in the header.
+        header
+            .child(label("Today".into(), ACCENT))
+            .child(date(date_text))
+    } else if d == model::add_days(today, 1) {
+        header
+            .child(label("Tomorrow".into(), TEXT))
+            .child(date(date_text))
+    } else {
+        header.child(label(date_text, TEXT).font_features(tabular()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Pure layout decisions behind the calendar views.
+    use super::*;
+
+    #[test]
+    fn agenda_layout_stacks_below_the_gutter_minimum() {
+        for w in [352.0, 479.9] {
+            assert_eq!(agenda_layout(w), AgendaLayout::Stacked, "{w}");
+        }
+        for w in [480.0, 672.0, 704.0, 1024.0, 2304.0] {
+            assert_eq!(agenda_layout(w), AgendaLayout::Gutter, "{w}");
+        }
     }
 }

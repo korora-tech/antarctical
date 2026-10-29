@@ -17,8 +17,9 @@ use super::theme::{
     ACCENT, AMBER, BG, BORDER, CAL_ROW_H, CAPTION, CONTROL_H, DECLINED_DOT_TINT, DETAIL_ACTION_H,
     DETAIL_HEADER_TINT, DETAIL_HEADER_TINT_DECLINED, DETAIL_ICON_BAR_GAP, DETAIL_ICON_BAR_H,
     DETAIL_ICON_BAR_W, DETAIL_ICON_DOT, DETAIL_ICON_PX, DETAIL_ICON_STROKE, DETAIL_ICON_W,
-    DETAIL_LINE_H, DETAIL_STRIP_H, DETAIL_TITLE_LINE_H, DETAIL_TITLE_PX, DETAIL_W, DISABLED, GREEN,
-    GRID_LINE, HEADER, HEADER_H, HOVER, MUTED, ON_ACCENT, PANEL, PANEL_RAISED, RED,
+    DETAIL_LINE_H, DETAIL_STRIP_H, DETAIL_TITLE_LINE_H, DETAIL_TITLE_PX, DETAIL_W, DISABLED,
+    FOOTER_DOT, FOOTER_DOT_GAP, FOOTER_LINE_H, FOOTER_TEXT_INDENT, GREEN, GRID_LINE, HEADER,
+    HEADER_COMPACT_BELOW, HEADER_H, HOVER, MUTED, ON_ACCENT, PANEL, PANEL_RAISED, RED,
     RSVP_PENDING_OPACITY, SECONDARY, SEGMENT_W, SELECTED, SELECTED_BORDER, SIDEBAR, SIDEBAR_W,
     TEXT, TITLE_PX, tint,
 };
@@ -252,15 +253,18 @@ impl MainView {
 
     // ----- chrome -------------------------------------------------------------------------
 
-    fn header(&self, cx: &Context<Self>) -> Div {
+    fn header(&self, window: &Window, cx: &Context<Self>) -> Div {
         let in_calendar = self.screen == Screen::Calendar;
+        // Narrow calendar windows drop the wordmark text and shorten the day title, so the whole
+        // title fits without the bold run truncating. Settings always keeps the wordmark.
+        let compact = in_calendar && f32::from(window.viewport_size().width) < HEADER_COMPACT_BELOW;
         let view_tabs = [
             ("seg-month", "Month", ViewMode::Month),
             ("seg-week", "Week", ViewMode::Week),
             ("seg-day", "Day", ViewMode::Day),
             ("seg-agenda", "Agenda", ViewMode::Agenda),
         ];
-        let (strong, light) = format::view_title_parts(self.view, self.anchor);
+        let (strong, light) = format::view_title_parts(self.view, self.anchor, compact);
         div()
             .h(px(HEADER_H))
             .w_full()
@@ -281,14 +285,16 @@ impl MainView {
                     .flex_1()
                     .min_w(px(0.0))
                     .child(branding::icon(36.0))
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_size(px(13.0))
-                            .text_color(rgb(SECONDARY))
-                            .child("antarctical"),
-                    )
+                    .when(!compact, |d| {
+                        d.child(
+                            div()
+                                .flex_shrink_0()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_size(px(13.0))
+                                .text_color(rgb(SECONDARY))
+                                .child("antarctical"),
+                        )
+                    })
                     .when(in_calendar, |d| {
                         // Navigation comes before the title so it stays put as the title changes.
                         d.child(div().flex_shrink_0().w(px(1.0)).h(px(26.0)).bg(rgb(BORDER)))
@@ -318,7 +324,8 @@ impl MainView {
                                     )),
                             )
                             // Both runs must stay the same size: items_baseline falls back to the
-                            // bottom edge for text leaves. Only the strong run truncates.
+                            // bottom edge for text leaves. Only the strong run truncates, as a last
+                            // resort; the year never shrinks.
                             .child(
                                 div()
                                     .flex()
@@ -615,27 +622,30 @@ impl MainView {
     }
 
     fn account_box(&self, store: &Store, cx: &Context<Self>) -> Div {
-        let (dot, line1, terse_sync) = match (&store.auth, store.accounts.as_slice()) {
-            (AuthState::Starting, _) => (DISABLED, "Opening keyring…".to_string(), false),
-            (AuthState::Locked, _) => (AMBER, "Keyring locked".into(), false),
-            (AuthState::Demo, _) => (ACCENT, "Demo data".into(), false),
-            _ if store.signing_in.is_some() => (AMBER, "Waiting for browser…".into(), false),
-            (AuthState::Ready, []) => (AMBER, "Not signed in".into(), false),
-            (AuthState::Ready, [one]) => (GREEN, one.clone(), true),
-            (AuthState::Ready, many) => (GREEN, format!("{} Google accounts", many.len()), false),
+        let (dot, line1) = match (&store.auth, store.accounts.as_slice()) {
+            (AuthState::Starting, _) => (DISABLED, "Opening keyring…".to_string()),
+            (AuthState::Locked, _) => (AMBER, "Keyring locked".into()),
+            (AuthState::Demo, _) => (ACCENT, "Demo data".into()),
+            _ if store.signing_in.is_some() => (AMBER, "Waiting for browser…".into()),
+            (AuthState::Ready, []) => (AMBER, "Not signed in".into()),
+            (AuthState::Ready, [one]) => (GREEN, one.clone()),
+            (AuthState::Ready, many) => (GREEN, format!("{} Google accounts", many.len())),
         };
         let dot = if store.busy { AMBER } else { dot };
         let clock = store.prefs.clock_24h;
         let line2 = if store.busy {
             "Syncing…".to_string()
         } else if let Some(t) = store.last_sync {
-            // An email is the only unbounded label here, so its row deliberately drops
-            // "Synced" to leave the address more room; the other states keep the word.
             let t = format::time(&t.to_zoned(TimeZone::system()), clock);
-            if terse_sync { t } else { format!("Synced {t}") }
+            format!("Synced {t}")
         } else {
             String::new()
         };
+        // The status label owns the first line and the sync time is a caption under it, so the
+        // label never competes with the clock for width. Both lines set FOOTER_LINE_H explicitly:
+        // gpui's default line height (phi() × 11px, about 17.8px) would make the pair about 35.6px
+        // and overflow the CAL_ROW_H content box. The text column has no definite height; the
+        // row's items_center centres it, so a lone label sits where the two lines' midpoint is.
         // The 1px top border also sits inside the border box, hence the extra pixel.
         div()
             .flex()
@@ -648,30 +658,49 @@ impl MainView {
             .border_color(rgb(GRID_LINE))
             .child(
                 div()
-                    .size(px(6.0))
-                    .flex_shrink_0()
-                    .rounded_full()
-                    .bg(rgb(dot)),
-            )
-            .child(
-                div()
                     .flex_1()
                     .min_w(px(0.0))
-                    .truncate()
-                    .text_size(px(11.0))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(rgb(SECONDARY))
-                    .child(line1),
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(FOOTER_DOT_GAP))
+                            .h(px(FOOTER_LINE_H))
+                            .min_w(px(0.0))
+                            .child(
+                                div()
+                                    .size(px(FOOTER_DOT))
+                                    .flex_shrink_0()
+                                    .rounded_full()
+                                    .bg(rgb(dot)),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .truncate()
+                                    .text_size(px(11.0))
+                                    .line_height(px(FOOTER_LINE_H))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(rgb(SECONDARY))
+                                    .child(line1),
+                            ),
+                    )
+                    .when(!line2.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .pl(px(FOOTER_TEXT_INDENT))
+                                .min_w(px(0.0))
+                                .truncate()
+                                .text_size(px(11.0))
+                                .line_height(px(FOOTER_LINE_H))
+                                .text_color(rgb(CAPTION))
+                                .child(line2),
+                        )
+                    }),
             )
-            .when(!line2.is_empty(), |d| {
-                d.child(
-                    div()
-                        .flex_shrink_0()
-                        .text_size(px(11.0))
-                        .text_color(rgb(CAPTION))
-                        .child(format!("· {line2}")),
-                )
-            })
             .when(store.signed_in(), |d| {
                 d.child(
                     ghost_button(
@@ -1173,7 +1202,7 @@ impl Render for MainView {
         }
         let store_entity = self.store.clone();
         let store = store_entity.read(cx);
-        let header = self.header(cx);
+        let header = self.header(window, cx);
         let banner = self.banner(store, cx);
         let sidebar = self.sidebar(store, cx);
         let toast = self.toast(store);
@@ -1183,19 +1212,25 @@ impl Render for MainView {
             Screen::Calendar => match self.auth_card(store, cx) {
                 Some(card) => card,
                 None => {
+                    let detail = self.detail_panel(store, cx);
+                    // Assumes a fixed-width, always-visible sidebar (change this if it becomes
+                    // collapsible) and server-side decorations, so the viewport has no CSD inset.
+                    let content_w = f32::from(window.viewport_size().width)
+                        - SIDEBAR_W
+                        - if detail.is_some() { DETAIL_W } else { 0.0 };
                     let content = match self.view {
                         ViewMode::Month => self.month_view(store, window, cx),
                         ViewMode::Week => {
                             self.time_grid(store, model::week_start(self.anchor), 7, cx)
                         }
                         ViewMode::Day => self.time_grid(store, self.anchor, 1, cx),
-                        ViewMode::Agenda => self.agenda_view(store, cx),
+                        ViewMode::Agenda => self.agenda_view(store, content_w, cx),
                     };
                     div()
                         .size_full()
                         .flex()
                         .child(div().flex_1().min_w(px(0.0)).h_full().child(content))
-                        .children(self.detail_panel(store, cx))
+                        .children(detail)
                         .into_any_element()
                 }
             },

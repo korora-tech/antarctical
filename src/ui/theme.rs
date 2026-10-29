@@ -82,8 +82,14 @@ pub const NOW_DOT: f32 = 12.0;
 pub const HOUR_PX: f32 = 48.0;
 /// The hour label's line box, centred vertically on its hour line.
 pub const HOUR_LABEL_LINE_H: f32 = 12.0;
-/// The agenda list's centred column.
-pub const AGENDA_MAX_W: f32 = 760.0;
+/// Side padding of the agenda list (the old px_6).
+pub const AGENDA_PAD_X: f32 = 24.0;
+/// Side padding of the agenda list when the date gutter is stacked.
+pub const AGENDA_PAD_X_STACKED: f32 = 16.0;
+/// Narrowest pane that keeps the agenda's date gutter: 480 - (48 pad + 72 gutter + 16 gap + 2 border + 28 row pad + 84 time + 24 gaps + 3 bar = 277) leaves the title 203px; narrower panes stack the date above the card.
+pub const AGENDA_GUTTER_MIN_W: f32 = 480.0;
+/// Shared line box of the stacked agenda day header's runs (13px text).
+pub const AGENDA_HEADER_LINE_H: f32 = 18.0;
 pub const AGENDA_ROW_H: f32 = 52.0;
 /// The agenda's date gutter: fits 'Tomorrow' at 11px semibold plus 6px padding each side.
 pub const AGENDA_GUTTER_W: f32 = 72.0;
@@ -122,8 +128,17 @@ pub const DETAIL_ACTION_H: f32 = 32.0;
 pub const DETAIL_STRIP_H: f32 = 3.0;
 /// Diameter of a calendar's on/off dot in the sidebar list.
 pub const CAL_DOT: f32 = 10.0;
-/// Height of one sidebar calendar row (also the footer status row).
+/// Height of one sidebar calendar row (also the footer's two-line status block).
 pub const CAL_ROW_H: f32 = 28.0;
+/// Line height of the sidebar footer's two text lines; two of them fill one CAL_ROW_H.
+/// Set explicitly: gpui's phi() default at 11px would overflow the block.
+pub const FOOTER_LINE_H: f32 = CAL_ROW_H / 2.0;
+/// Diameter of the sidebar footer's status dot.
+pub const FOOTER_DOT: f32 = 6.0;
+/// Gap between the footer's status dot and its label.
+pub const FOOTER_DOT_GAP: f32 = 8.0;
+/// Indent that lines the footer's sync caption up under the status label: the dot plus its gap.
+pub const FOOTER_TEXT_INDENT: f32 = FOOTER_DOT + FOOTER_DOT_GAP;
 /// The week and day grid's column header row.
 pub const DAY_HEADER_H: f32 = 52.0;
 /// The window header (wordmark, title, toolbar).
@@ -135,6 +150,12 @@ pub const CONTROL_H: f32 = 30.0;
 pub const SEGMENT_W: f32 = 68.0;
 /// The header's view title.
 pub const TITLE_PX: f32 = 22.0;
+/// Window width below which the calendar header goes compact: no wordmark text and a short day
+/// title. The longest full title ('Wednesday, 30 September' 2026, ≈358px at 22px Inter) needs
+/// ≈1057px with the wordmark; the longest compact one ('28 Dec – 3 Jan' 2026 – 2027, ≈296px)
+/// fits at the 960px minimum. Widths are approximate and assume Inter, so recompute this if
+/// TITLE_PX, SEGMENT_W or the header padding changes.
+pub const HEADER_COMPACT_BELOW: f32 = 1100.0;
 /// The detail pane's event title and its line height.
 pub const DETAIL_TITLE_PX: f32 = 18.0;
 pub const DETAIL_TITLE_LINE_H: f32 = 24.0;
@@ -282,5 +303,11 @@ mod tests {
         let fill = tint(tint(0x9fe1e7, BG, EVENT_FILL), TODAY_BG, PAST_OPACITY);
         assert!(faded(SECONDARY, fill) >= 3.0);
         assert!(faded(TEXT, fill) >= 4.5);
+    }
+
+    #[test]
+    fn sidebar_footer_text_meets_aa() {
+        assert!(contrast(SECONDARY, SIDEBAR) >= 4.5);
+        assert!(contrast(CAPTION, SIDEBAR) >= 4.5);
     }
 }

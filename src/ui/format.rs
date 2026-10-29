@@ -50,6 +50,23 @@ pub fn event_time_on(e: &Event, date: Date, tz: &TimeZone, clock_24h: bool) -> S
     }
 }
 
+/// [`event_time_on`] for a week/day block, then shorter forms to fall back on when it does
+/// not fit: a same-day range drops to its start ("10:26am"). Mirrors [`event_time_on`].
+pub fn event_time_options_on(e: &Event, date: Date, tz: &TimeZone, clock_24h: bool) -> Vec<String> {
+    let full = event_time_on(e, date, tz, clock_24h);
+    let When::Timed { .. } = e.when else {
+        return vec![full];
+    };
+    let (s, en) = (e.start_zoned(tz), e.end_zoned(tz));
+    let ends_later = en.date() > date
+        && !(en.date() == model::add_days(date, 1) && en.hour() == 0 && en.minute() == 0);
+    if s.date() < date || ends_later || s == en {
+        vec![full]
+    } else {
+        vec![full, time(&s, clock_24h)]
+    }
+}
+
 /// Agenda time column for `e` on `date`: (main line, optional second line), or None when
 /// the row should read "All day". Mirrors [`event_time_on`].
 pub fn event_time_parts_on(
@@ -112,7 +129,10 @@ pub fn event_when_long(e: &Event, tz: &TimeZone, clock_24h: bool) -> String {
 }
 
 /// The header title as (strong, light): the bold part says what is shown, the light part when.
-pub fn view_title_parts(view: ViewMode, anchor: Date) -> (String, String) {
+/// `compact` shortens only the day title's weekday ('Wed, 30 September'), keeping the comma and
+/// full month of the long form so both tiers read alike; every other title and the year are
+/// unchanged.
+pub fn view_title_parts(view: ViewMode, anchor: Date, compact: bool) -> (String, String) {
     let year = |d: Date| d.strftime("%Y").to_string();
     match view {
         ViewMode::Month => (anchor.strftime("%B").to_string(), year(anchor)),
@@ -131,7 +151,10 @@ pub fn view_title_parts(view: ViewMode, anchor: Date) -> (String, String) {
             };
             (strong, light)
         }
-        ViewMode::Day => (anchor.strftime("%A, %-d %B").to_string(), year(anchor)),
+        ViewMode::Day => {
+            let pattern = if compact { "%a, %-d %B" } else { "%A, %-d %B" };
+            (anchor.strftime(pattern).to_string(), year(anchor))
+        }
         ViewMode::Agenda => (format!("From {}", anchor.strftime("%-d %B")), year(anchor)),
     }
 }
@@ -159,29 +182,57 @@ mod tests {
     fn titles() {
         let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
         assert_eq!(
-            view_title_parts(ViewMode::Month, date(2026, 10, 21)),
+            view_title_parts(ViewMode::Month, date(2026, 10, 21), false),
             pair("October", "2026")
         );
         assert_eq!(
-            view_title_parts(ViewMode::Week, date(2026, 10, 21)),
+            view_title_parts(ViewMode::Week, date(2026, 10, 21), false),
             pair("19 – 25 October", "2026")
         );
         assert_eq!(
-            view_title_parts(ViewMode::Week, date(2026, 9, 30)),
+            view_title_parts(ViewMode::Week, date(2026, 9, 30), false),
             pair("28 Sep – 4 Oct", "2026")
         );
         assert_eq!(
-            view_title_parts(ViewMode::Week, date(2026, 12, 31)),
+            view_title_parts(ViewMode::Week, date(2026, 12, 31), false),
             pair("28 Dec – 3 Jan", "2026 – 2027")
         );
         assert_eq!(
-            view_title_parts(ViewMode::Day, date(2026, 10, 29)),
+            view_title_parts(ViewMode::Day, date(2026, 10, 29), false),
             pair("Thursday, 29 October", "2026")
         );
         assert_eq!(
-            view_title_parts(ViewMode::Agenda, date(2026, 10, 29)),
+            view_title_parts(ViewMode::Agenda, date(2026, 10, 29), false),
             pair("From 29 October", "2026")
         );
+    }
+
+    #[test]
+    fn compact_titles() {
+        let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
+        assert_eq!(
+            view_title_parts(ViewMode::Day, date(2026, 9, 30), true),
+            pair("Wed, 30 September", "2026")
+        );
+        assert_eq!(
+            view_title_parts(ViewMode::Day, date(2026, 10, 29), true),
+            pair("Thu, 29 October", "2026")
+        );
+        assert_eq!(
+            view_title_parts(ViewMode::Week, date(2026, 12, 31), true),
+            pair("28 Dec – 3 Jan", "2026 – 2027")
+        );
+        for (view, anchor) in [
+            (ViewMode::Month, date(2026, 9, 30)),
+            (ViewMode::Agenda, date(2026, 9, 30)),
+            (ViewMode::Week, date(2026, 9, 30)),
+            (ViewMode::Week, date(2026, 9, 23)),
+        ] {
+            assert_eq!(
+                view_title_parts(view, anchor, true),
+                view_title_parts(view, anchor, false)
+            );
+        }
     }
 
     #[test]
@@ -277,6 +328,74 @@ mod tests {
             end: date(2026, 10, 22),
         };
         assert_eq!(event_time_parts_on(&e, d21, &tz, true), None);
+    }
+
+    #[test]
+    fn block_time_options() {
+        let tz = TimeZone::UTC;
+        let timed = |start: &str, end: &str| Event {
+            id: "e".into(),
+            calendar_id: "c".into(),
+            title: "t".into(),
+            when: When::Timed {
+                start: start.parse().unwrap(),
+                end: end.parse().unwrap(),
+            },
+            color: None,
+            location: None,
+            description: None,
+            html_link: None,
+            meet_link: None,
+            organizer: None,
+            attendees: vec![],
+            reminders: vec![],
+            tentative: false,
+        };
+        let d21 = date(2026, 10, 21);
+        let d22 = date(2026, 10, 22);
+
+        let e = timed("2026-10-21T10:26:00Z", "2026-10-21T11:11:00Z");
+        assert_eq!(
+            event_time_options_on(&e, d21, &tz, false),
+            ["10:26am – 11:11am", "10:26am"]
+        );
+        assert_eq!(
+            event_time_options_on(&e, d21, &tz, true),
+            ["10:26 – 11:11", "10:26"]
+        );
+
+        let e = timed("2026-10-21T10:00:00Z", "2026-10-21T11:30:00Z");
+        assert_eq!(
+            event_time_options_on(&e, d21, &tz, false),
+            ["10am – 11:30am", "10am"]
+        );
+        assert_eq!(
+            event_time_options_on(&e, d21, &tz, true),
+            ["10:00 – 11:30", "10:00"]
+        );
+
+        let e = timed("2026-10-21T22:30:00Z", "2026-10-22T11:00:00Z");
+        assert_eq!(event_time_options_on(&e, d21, &tz, true), ["From 22:30"]);
+        assert_eq!(event_time_options_on(&e, d21, &tz, false), ["From 10:30pm"]);
+        assert_eq!(event_time_options_on(&e, d22, &tz, true), ["Until 11:00"]);
+        assert_eq!(event_time_options_on(&e, d22, &tz, false), ["Until 11am"]);
+
+        // Ending at midnight still reads as a same-day range.
+        let e = timed("2026-10-21T23:00:00Z", "2026-10-22T00:00:00Z");
+        assert_eq!(
+            event_time_options_on(&e, d21, &tz, true),
+            ["23:00 – 00:00", "23:00"]
+        );
+
+        let e = timed("2026-10-21T09:00:00Z", "2026-10-21T09:00:00Z");
+        assert_eq!(event_time_options_on(&e, d21, &tz, true), ["09:00"]);
+
+        let mut e = e;
+        e.when = When::AllDay {
+            start: d21,
+            end: d22,
+        };
+        assert_eq!(event_time_options_on(&e, d21, &tz, true), ["All day"]);
     }
 
     #[test]
