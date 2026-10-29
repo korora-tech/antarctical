@@ -12,13 +12,19 @@ use jiff::{Timestamp, Zoned};
 use super::format;
 use super::main_view::{AGENDA_DAYS, MainView};
 use super::theme::{
-    ACCENT, ACCENT_TEXT, AGENDA_GUTTER_W, AGENDA_MAX_W, AGENDA_RADIUS, AGENDA_ROW_H,
-    AGENDA_SECTION_GAP, AGENDA_TIME_W, ALL_DAY_BAR_W, ALL_DAY_FILL, ALL_DAY_FILL_DECLINED,
-    ALL_DAY_FILL_HOVER, BG, BORDER, CAPTION, CHIP_TIME_W_12H, CHIP_TIME_W_24H, DAY_HEADER_H,
-    DISABLED, GRID_LINE, HEADER_H, HOUR_PX, HOVER, MONTH_DAY_PX, MUTED, NOW_LINE, NOW_LINE_FAINT,
-    NOW_PILL_CLEARANCE, NOW_PILL_H, NOW_PILL_TEXT, ON_ACCENT, OUTSIDE, PANEL, PAST_DAY_TEXT,
-    PAST_HOVER_OPACITY, PAST_OPACITY, SECONDARY, SELECTED, TEXT, TODAY_BG, TODAY_HEADER_BG,
-    TODAY_HOVER, WEEKDAY_HEADER_H, WEEKEND_BG, tabular, tint,
+    ACCENT, ACCENT_TEXT, AGENDA_DAY_LINE_H, AGENDA_DAY_PX, AGENDA_GUTTER_W, AGENDA_MAX_W,
+    AGENDA_RADIUS, AGENDA_ROW_H, AGENDA_SECTION_GAP, AGENDA_TIME_W, ALL_DAY_BAR_W, ALL_DAY_FILL,
+    ALL_DAY_FILL_DECLINED, ALL_DAY_FILL_HOVER, BG, BORDER, CAPTION, CHIP_TIME_W_12H,
+    CHIP_TIME_W_24H, DAY_HEADER_GAP, DAY_HEADER_H, DAY_HEADER_NUM_PX, DAY_HEADER_PAD,
+    DECLINED_BAR_OPACITY, DISABLED, EVENT_BAR_DECLINED, EVENT_BAR_INSET, EVENT_BAR_W, EVENT_FILL,
+    EVENT_FILL_DECLINED, EVENT_FILL_DECLINED_HOVER, EVENT_FILL_HOVER, EVENT_FILL_SELECTED,
+    EVENT_GUTTER_L, EVENT_GUTTER_R, EVENT_LINE_H, EVENT_META_LINE_H, EVENT_META_PX,
+    EVENT_OVERLAP_GAP, EVENT_PAD_X, EVENT_RADIUS, EVENT_TITLE_PX, GRID_LINE, HEADER_H,
+    HOUR_LABEL_LINE_H, HOUR_PX, HOVER, MONTH_DAY_DISC, MONTH_DAY_PX, MUTED, NOW_DOT, NOW_LINE,
+    NOW_LINE_FAINT, NOW_PILL_CLEARANCE, NOW_PILL_H, NOW_PILL_TEXT, ON_ACCENT, OUTSIDE, PANEL,
+    PAST_CAPTION, PAST_DAY_TEXT, PAST_HOVER_OPACITY, PAST_OPACITY, SECONDARY, SELECTED, TEXT,
+    TODAY_BG, TODAY_DISC, TODAY_HEADER_BG, TODAY_HOVER, WEEKDAY_HEADER_H, WEEKEND_BG, event_ring,
+    event_subtext, event_text, tabular, tint,
 };
 use crate::layout;
 use crate::model;
@@ -31,23 +37,26 @@ const GUTTER_W: f32 = 56.0;
 /// Right inset shared by hour labels and the all-day label.
 const GUTTER_PAD: f32 = 8.0;
 
-/// A chip's id and whether its bar joins the same event in the neighbouring cells.
+/// A chip's id, whether its bar joins the same event in the neighbouring cells, and whether the
+/// event has ended.
 struct ChipSlot {
     id: SharedString,
     join_left: bool,
     join_right: bool,
     /// The parent cell's padding, which a joined side reaches across.
     pad: f32,
+    past: bool,
 }
 
 impl ChipSlot {
     /// A chip that stands alone in its cell.
-    fn single(id: SharedString, pad: f32) -> Self {
+    fn single(id: SharedString, pad: f32, past: bool) -> Self {
         Self {
             id,
             join_left: false,
             join_right: false,
             pad,
+            past,
         }
     }
 }
@@ -104,9 +113,7 @@ impl MainView {
         let color = store.color_of(e);
         let selected = self.is_selected(e);
         let declined = e.declined();
-        // Reads the clock per chip rather than taking `now`: an 8th argument trips clippy's
-        // too_many_arguments.
-        let faded = is_past(e, Timestamp::now(), tz) && !selected && !declined;
+        let faded = slot.past && !selected && !declined;
         let base = div()
             .id(slot.id)
             .h(px(MONTH_ROW_H - 2.0))
@@ -158,7 +165,7 @@ impl MainView {
                                 .w(px(ALL_DAY_BAR_W))
                                 .rounded_l(px(4.0))
                                 .bg(rgb(color))
-                                .when(declined, |d| d.opacity(0.4)),
+                                .when(declined, |d| d.opacity(DECLINED_BAR_OPACITY)),
                         )
                         .child(
                             div()
@@ -205,7 +212,7 @@ impl MainView {
                         .flex_shrink_0()
                         .min_w(px(time_w))
                         .text_size(px(10.5))
-                        .text_color(rgb(CAPTION))
+                        .text_color(rgb(if faded { PAST_CAPTION } else { CAPTION }))
                         .child(label),
                 )
                 .child(
@@ -228,7 +235,9 @@ impl MainView {
         cx: &Context<Self>,
     ) -> AnyElement {
         let tz = TimeZone::system();
-        let today = Zoned::now().date();
+        let now = Zoned::now();
+        let today = now.date();
+        let now_ts = now.timestamp();
         let grid = model::month_grid(self.anchor);
         let month = self.anchor.month();
         let mut events = store.events_between(grid[0], model::add_days(grid[41], 1), &tz);
@@ -236,9 +245,10 @@ impl MainView {
         // Rows that fit in a cell: the window height minus chrome, over six weeks.
         let viewport = f32::from(window.viewport_size().height);
         let cell_h = ((viewport - HEADER_H - WEEKDAY_HEADER_H) / 6.0).max(60.0);
-        // 1px bottom border, 4px padding top and bottom plus the 22px numeral; each row adds
-        // its 2px gap and chip (MONTH_ROW_H).
-        let rows = (((cell_h - 31.0) / MONTH_ROW_H).floor() as usize).max(1);
+        // The 1px bottom border, 4px padding top and bottom and the MONTH_DAY_DISC numeral; each
+        // row adds its 2px gap and chip (MONTH_ROW_H).
+        let rows =
+            (((cell_h - (1.0 + 8.0 + MONTH_DAY_DISC)) / MONTH_ROW_H).floor() as usize).max(1);
 
         // Labels follow month_grid's week start; px(10) lines up with the numerals.
         let weekday_header = div()
@@ -300,8 +310,8 @@ impl MainView {
                     (TEXT, FontWeight::MEDIUM)
                 };
                 let numeral = div()
-                    .h(px(22.0))
-                    .min_w(px(22.0))
+                    .h(px(MONTH_DAY_DISC))
+                    .min_w(px(MONTH_DAY_DISC))
                     .px(px(6.0))
                     .flex()
                     .items_center()
@@ -361,9 +371,10 @@ impl MainView {
                                 join_left: i > 0 && joins(rendered.get(i - 1).copied(), k, e),
                                 join_right: joins(rendered.get(i + 1).copied(), k, e),
                                 pad: 4.0,
+                                past: is_past(e, now_ts, &tz),
                             }
                         } else {
-                            ChipSlot::single(id, 4.0)
+                            ChipSlot::single(id, 4.0, is_past(e, now_ts, &tz))
                         };
                         self.chip(store, e, date, slot, &tz, cx)
                     }))
@@ -454,8 +465,8 @@ impl MainView {
                     .overflow_hidden()
                     .flex()
                     .items_center()
-                    .gap(px(4.0))
-                    .px(px(8.0))
+                    .gap(px(DAY_HEADER_GAP))
+                    .px(px(DAY_HEADER_PAD))
                     .border_l_1()
                     .border_color(rgb(GRID_LINE))
                     .when(wash && is_today, |el| el.bg(rgb(TODAY_HEADER_BG)))
@@ -469,14 +480,16 @@ impl MainView {
                             cx.listener(move |this, _: &ClickEvent, _, cx| this.open_day(d, cx)),
                         )
                     })
-                    // In narrow columns the caps give way first, so the date always shows;
-                    // 8px padding, 4px gap and the 28px numeral fit the 960px window with both panes.
+                    // In narrow columns the caps give way first, so the date always shows. At the
+                    // 960px window with both panes a column is (960-256-352-56)/7 = 42.3px; border,
+                    // padding, gap and disc need 1 + 2*5 + 2 + 28 = 41px. Caps and numeral are
+                    // centred in the same line box, so their baselines sit a few px apart.
                     .child(
                         div()
                             .min_w(px(0.0))
                             .truncate()
                             .text_size(px(11.0))
-                            .line_height(px(28.0))
+                            .line_height(px(TODAY_DISC))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(rgb(label_fg))
                             .child(d.strftime("%a").to_string().to_uppercase()),
@@ -484,33 +497,23 @@ impl MainView {
                     .child(
                         div()
                             .flex_shrink_0()
-                            .h(px(28.0))
-                            .min_w(px(28.0))
+                            .h(px(TODAY_DISC))
+                            .min_w(px(TODAY_DISC))
                             .flex()
                             .items_center()
                             .justify_center()
-                            .text_size(px(20.0))
-                            .line_height(px(28.0))
+                            .text_size(px(DAY_HEADER_NUM_PX))
+                            .line_height(px(TODAY_DISC))
+                            .font_features(tabular())
                             .text_color(rgb(number_fg))
                             .when(is_today, |s| {
                                 s.rounded_full()
-                                    .px(px(2.0))
                                     .bg(rgb(ACCENT))
                                     .font_weight(FontWeight::SEMIBOLD)
                             })
                             .when(!is_today, |s| s.font_weight(FontWeight::NORMAL))
                             .child(d.day().to_string()),
                     )
-                    .when(days == 1, |el| {
-                        el.child(
-                            div()
-                                .text_size(px(13.0))
-                                .font_weight(FontWeight::NORMAL)
-                                .text_color(rgb(CAPTION))
-                                .truncate()
-                                .child(d.strftime("%B %Y").to_string()),
-                        )
-                    })
             }));
 
         // All-day strip: as tall as the busiest day, capped at 4 rows.
@@ -582,6 +585,7 @@ impl MainView {
                                 join_left: i > 0 && joins(rendered.get(i - 1).copied(), k, e),
                                 join_right: joins(rendered.get(i + 1).copied(), k, e),
                                 pad: 3.0,
+                                past: is_past(e, now_ts, &tz),
                             };
                             self.chip(store, e, *d, slot, &tz, cx)
                         }))
@@ -609,14 +613,15 @@ impl MainView {
                     })
                     .map(|h| {
                         let (num, suffix) = format::hour_label_parts(h as i8, clock);
-                        // A 12px line box topped 6px above the hour centres the label on its line.
+                        // The HOUR_LABEL_LINE_H line box is centred vertically on the hour line;
+                        // the label stays right-aligned at GUTTER_PAD.
                         div()
                             .absolute()
-                            .top(px(h as f32 * HOUR_PX - 6.0))
+                            .top(px(h as f32 * HOUR_PX - HOUR_LABEL_LINE_H / 2.0))
                             .right(px(GUTTER_PAD))
                             .flex()
                             .items_baseline()
-                            .line_height(px(12.0))
+                            .line_height(px(HOUR_LABEL_LINE_H))
                             .text_color(rgb(CAPTION))
                             .child(
                                 div()
@@ -743,9 +748,61 @@ impl MainView {
                 } else {
                     BG
                 };
+                let (title_color, meta_color) = if declined {
+                    (MUTED, MUTED)
+                } else if faded {
+                    // Plain text: the tinted colours fall short of AA once faded.
+                    (TEXT, SECONDARY)
+                } else {
+                    (event_text(color), event_subtext(color))
+                };
+                let fill = if declined {
+                    EVENT_FILL_DECLINED
+                } else if selected {
+                    EVENT_FILL_SELECTED
+                } else {
+                    EVENT_FILL
+                };
+                let hover = if declined {
+                    EVENT_FILL_DECLINED_HOVER
+                } else if selected {
+                    EVENT_FILL_SELECTED
+                } else {
+                    EVENT_FILL_HOVER
+                };
+                let bar = if declined {
+                    tint(color, BG, EVENT_BAR_DECLINED)
+                } else {
+                    color
+                };
                 let top = start as f32 * HOUR_PX / 60.0;
                 let height = ((end - start) as f32 * HOUR_PX / 60.0 - 2.0).max(14.0);
+                // Short single-column blocks show their start on the title row, unless they
+                // carry on from an earlier day (as in the spans above).
+                let start_label = (height <= 30.0 && slot.cols == 1)
+                    .then(|| e.instants(&tz).start)
+                    .filter(|&s| s > day_from)
+                    .map(|s| format::time(&s.to_zoned(tz.clone()), clock));
                 let width = 1.0 / slot.cols as f32;
+                // Overlapping blocks sit EVENT_OVERLAP_GAP apart; the outer edges keep the gutter.
+                let half_gap = EVENT_OVERLAP_GAP / 2.0;
+                let pad_l = if slot.col == 0 {
+                    EVENT_GUTTER_L
+                } else {
+                    half_gap
+                };
+                let pad_r = if slot.col + 1 == slot.cols {
+                    EVENT_GUTTER_R
+                } else {
+                    half_gap
+                };
+                let title = div()
+                    .text_size(px(EVENT_TITLE_PX))
+                    .line_height(px(EVENT_LINE_H))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(title_color))
+                    .when(declined, |s| s.line_through())
+                    .child(e.title.clone());
                 col = col.child(
                     div()
                         .id(SharedString::from(format!(
@@ -757,59 +814,116 @@ impl MainView {
                         .h(px(height))
                         .left(relative(slot.col as f32 * width))
                         .w(relative(width))
-                        .pr(px(3.0))
-                        .pl(px(2.0))
+                        .pr(px(pad_r))
+                        .pl(px(pad_l))
                         .child(
-                            div().size_full().rounded_md().bg(rgb(underlay)).child(
-                                div()
-                                    .size_full()
-                                    .flex()
-                                    .flex_col()
-                                    .overflow_hidden()
-                                    .rounded_md()
-                                    .border_l_2()
-                                    .border_color(rgb(color))
-                                    .bg(rgb(tint(color, BG, if declined { 0.12 } else { 0.32 })))
-                                    .when(selected, |s| s.border_1().border_color(rgb(ACCENT)))
-                                    .px(px(6.0))
-                                    .py(px(if height < 24.0 { 0.0 } else { 2.0 }))
-                                    .when(faded, |s| s.opacity(PAST_OPACITY))
-                                    .hover(move |s| {
-                                        let s = s.bg(rgb(tint(color, BG, 0.45))).cursor_pointer();
-                                        if faded {
-                                            s.opacity(PAST_HOVER_OPACITY)
-                                        } else {
-                                            s
-                                        }
-                                    })
-                                    .child(
-                                        div()
-                                            .line_height(px(14.0))
-                                            .when(height < 24.0, |s| s.truncate())
-                                            .text_size(px(11.0))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(rgb(if declined { MUTED } else { TEXT }))
-                                            .when(declined, |s| s.line_through())
-                                            .child(e.title.clone()),
-                                    )
-                                    .when(height > 30.0, |s| {
-                                        s.child(
+                            div()
+                                .size_full()
+                                .rounded(px(EVENT_RADIUS))
+                                .bg(rgb(underlay))
+                                .child(
+                                    div()
+                                        .size_full()
+                                        .relative()
+                                        .flex()
+                                        .flex_col()
+                                        .overflow_hidden()
+                                        .rounded(px(EVENT_RADIUS))
+                                        .bg(rgb(tint(color, BG, fill)))
+                                        .pl(px(EVENT_BAR_INSET + EVENT_BAR_W + EVENT_PAD_X))
+                                        .pr(px(EVENT_PAD_X))
+                                        .py(px(if height < 24.0 { 0.0 } else { 2.0 }))
+                                        .when(faded, |s| s.opacity(PAST_OPACITY))
+                                        .hover(move |s| {
+                                            let s =
+                                                s.bg(rgb(tint(color, BG, hover))).cursor_pointer();
+                                            if faded {
+                                                s.opacity(PAST_HOVER_OPACITY)
+                                            } else {
+                                                s
+                                            }
+                                        })
+                                        // A straight pill inset from the edge, so it never
+                                        // bends round the rounded corner.
+                                        .child(
                                             div()
-                                                .text_size(px(10.0))
-                                                .text_color(rgb(SECONDARY))
-                                                .child(format::event_time_on(e, d, &tz, clock)),
+                                                .absolute()
+                                                .top(px(EVENT_BAR_INSET))
+                                                .bottom(px(EVENT_BAR_INSET))
+                                                .left(px(EVENT_BAR_INSET))
+                                                .w(px(EVENT_BAR_W))
+                                                .rounded_full()
+                                                .bg(rgb(bar)),
                                         )
-                                    })
-                                    .when(height > 46.0 && e.location.is_some(), |s| {
-                                        s.child(
-                                            div()
-                                                .text_size(px(10.0))
-                                                .text_color(rgb(MUTED))
-                                                .truncate()
-                                                .child(e.location.clone().unwrap_or_default()),
-                                        )
-                                    }),
-                            ),
+                                        .map(|s| {
+                                            if height <= 30.0 {
+                                                s.child(
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(px(EVENT_PAD_X))
+                                                        .line_height(px(EVENT_LINE_H))
+                                                        .child(
+                                                            title
+                                                                .flex_1()
+                                                                .min_w(px(0.0))
+                                                                .truncate(),
+                                                        )
+                                                        .when_some(start_label, |s, label| {
+                                                            s.child(
+                                                                div()
+                                                                    .flex_shrink_0()
+                                                                    .text_size(px(EVENT_META_PX))
+                                                                    .line_height(px(EVENT_LINE_H))
+                                                                    .font_weight(FontWeight::MEDIUM)
+                                                                    .font_features(tabular())
+                                                                    .text_color(rgb(meta_color))
+                                                                    .child(label),
+                                                            )
+                                                        }),
+                                                )
+                                            } else {
+                                                // Up to 46px one title line, so the time stays;
+                                                // it must not shrink when a narrow time wraps.
+                                                s.child(title.when(height <= 46.0, |s| {
+                                                    s.flex_shrink_0().truncate()
+                                                }))
+                                            }
+                                        })
+                                        .when(height > 30.0, |s| {
+                                            s.child(
+                                                div()
+                                                    .text_size(px(EVENT_META_PX))
+                                                    .line_height(px(EVENT_META_LINE_H))
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .font_features(tabular())
+                                                    .text_color(rgb(meta_color))
+                                                    .child(format::event_time_on(e, d, &tz, clock)),
+                                            )
+                                        })
+                                        .when(height > 46.0 && e.location.is_some(), |s| {
+                                            s.child(
+                                                div()
+                                                    .text_size(px(EVENT_META_PX))
+                                                    .line_height(px(EVENT_META_LINE_H))
+                                                    .text_color(rgb(meta_color))
+                                                    .truncate()
+                                                    .child(e.location.clone().unwrap_or_default()),
+                                            )
+                                        })
+                                        // Last, so the ring paints over the text; absolute, so
+                                        // selecting moves nothing.
+                                        .when(selected, |s| {
+                                            s.child(
+                                                div()
+                                                    .absolute()
+                                                    .inset_0()
+                                                    .rounded(px(EVENT_RADIUS))
+                                                    .border_1()
+                                                    .border_color(rgb(event_ring(color))),
+                                            )
+                                        }),
+                                ),
                         )
                         .on_click(self.event_click(e, cx)),
                 );
@@ -831,8 +945,8 @@ impl MainView {
                         div()
                             .absolute()
                             .left_0()
-                            .top(px(now_top - 6.0))
-                            .size(px(12.0))
+                            .top(px(now_top - NOW_DOT / 2.0))
+                            .size(px(NOW_DOT))
                             .rounded_full()
                             .bg(rgb(NOW_LINE))
                             .border_2()
@@ -927,18 +1041,19 @@ impl MainView {
                             CAPTION,
                         ))
                     })
-                    .when(is_today, |g| g.child(caption("Today".into(), ACCENT_TEXT)))
+                    // ACCENT, not ACCENT_TEXT: 2.47:1 vs other days' TEXT numerals, 5.04:1 on HOVER.
+                    .when(is_today, |g| g.child(caption("Today".into(), ACCENT)))
                     .when(d == model::add_days(today, 1), |g| {
                         g.child(caption("Tomorrow".into(), MUTED))
                     })
                     .child(
                         div()
                             .whitespace_nowrap()
-                            .text_size(px(26.0))
-                            .line_height(px(30.0))
+                            .text_size(px(AGENDA_DAY_PX))
+                            .line_height(px(AGENDA_DAY_LINE_H))
                             .font_weight(FontWeight::BOLD)
                             .font_features(tabular())
-                            .text_color(rgb(if is_today { ACCENT_TEXT } else { TEXT }))
+                            .text_color(rgb(if is_today { ACCENT } else { TEXT }))
                             .child(d.strftime("%-d").to_string()),
                     )
                     .child(caption(d.strftime("%a").to_string(), MUTED));

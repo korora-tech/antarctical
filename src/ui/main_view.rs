@@ -14,10 +14,13 @@ use jiff::tz::TimeZone;
 use super::format;
 use super::settings::{SettingsEvent, SettingsView};
 use super::theme::{
-    ACCENT, AMBER, BG, BORDER, CAL_ROW_H, CAPTION, CONTROL_H, DETAIL_ACTION_H, DETAIL_HEADER_TINT,
-    DETAIL_HEADER_TINT_DECLINED, DETAIL_ICON_W, DETAIL_STRIP_H, DETAIL_W, DISABLED, GREEN,
-    GRID_LINE, HEADER, HEADER_H, HOVER, MUTED, ON_ACCENT, PANEL, PANEL_RAISED, RED, SECONDARY,
-    SEGMENT_W, SELECTED, SELECTED_BORDER, SIDEBAR, SIDEBAR_W, TEXT, TITLE_PX, tint,
+    ACCENT, AMBER, BG, BORDER, CAL_ROW_H, CAPTION, CONTROL_H, DECLINED_DOT_TINT, DETAIL_ACTION_H,
+    DETAIL_HEADER_TINT, DETAIL_HEADER_TINT_DECLINED, DETAIL_ICON_BAR_GAP, DETAIL_ICON_BAR_H,
+    DETAIL_ICON_BAR_W, DETAIL_ICON_DOT, DETAIL_ICON_PX, DETAIL_ICON_STROKE, DETAIL_ICON_W,
+    DETAIL_LINE_H, DETAIL_STRIP_H, DETAIL_TITLE_LINE_H, DETAIL_TITLE_PX, DETAIL_W, DISABLED, GREEN,
+    GRID_LINE, HEADER, HEADER_H, HOVER, MUTED, ON_ACCENT, PANEL, PANEL_RAISED, RED,
+    RSVP_PENDING_OPACITY, SECONDARY, SEGMENT_W, SELECTED, SELECTED_BORDER, SIDEBAR, SIDEBAR_W,
+    TEXT, TITLE_PX, tint,
 };
 use super::widgets::{
     ButtonStyle, OnClick, body_text, button, calendar_toggle_row, card, chevron_segment,
@@ -612,24 +615,24 @@ impl MainView {
     }
 
     fn account_box(&self, store: &Store, cx: &Context<Self>) -> Div {
-        let (dot, line1) = match (&store.auth, store.accounts.as_slice()) {
-            (AuthState::Starting, _) => (DISABLED, "Opening keyring…".to_string()),
-            (AuthState::Locked, _) => (AMBER, "Keyring locked".into()),
-            (AuthState::Demo, _) => (ACCENT, "Demo data".into()),
-            _ if store.signing_in.is_some() => (AMBER, "Waiting for browser…".into()),
-            (AuthState::Ready, []) => (AMBER, "Not signed in".into()),
-            (AuthState::Ready, [one]) => (GREEN, one.clone()),
-            (AuthState::Ready, many) => (GREEN, format!("{} Google accounts", many.len())),
+        let (dot, line1, terse_sync) = match (&store.auth, store.accounts.as_slice()) {
+            (AuthState::Starting, _) => (DISABLED, "Opening keyring…".to_string(), false),
+            (AuthState::Locked, _) => (AMBER, "Keyring locked".into(), false),
+            (AuthState::Demo, _) => (ACCENT, "Demo data".into(), false),
+            _ if store.signing_in.is_some() => (AMBER, "Waiting for browser…".into(), false),
+            (AuthState::Ready, []) => (AMBER, "Not signed in".into(), false),
+            (AuthState::Ready, [one]) => (GREEN, one.clone(), true),
+            (AuthState::Ready, many) => (GREEN, format!("{} Google accounts", many.len()), false),
         };
         let dot = if store.busy { AMBER } else { dot };
         let clock = store.prefs.clock_24h;
         let line2 = if store.busy {
             "Syncing…".to_string()
         } else if let Some(t) = store.last_sync {
-            format!(
-                "Synced {}",
-                format::time(&t.to_zoned(TimeZone::system()), clock)
-            )
+            // An email is the only unbounded label here, so its row deliberately drops
+            // "Synced" to leave the address more room; the other states keep the word.
+            let t = format::time(&t.to_zoned(TimeZone::system()), clock);
+            if terse_sync { t } else { format!("Synced {t}") }
         } else {
             String::new()
         };
@@ -762,7 +765,9 @@ impl MainView {
             .unwrap_or_default();
         let clock = store.prefs.clock_24h;
 
-        let icon_row = |glyph: &'static str, glyph_color: u32, value: String| {
+        // Each icon is centred on the row's first line, drawn or text alike, so the column reads
+        // as one vertical line.
+        let icon_row = |icon: AnyElement, value: String| {
             div()
                 .flex()
                 .items_start()
@@ -770,18 +775,19 @@ impl MainView {
                 .child(
                     div()
                         .w(px(DETAIL_ICON_W))
+                        .h(px(DETAIL_LINE_H))
                         .flex_shrink_0()
-                        .text_size(px(13.0))
-                        .line_height(px(19.0))
-                        .text_color(rgb(glyph_color))
-                        .child(glyph),
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon),
                 )
                 .child(
                     div()
                         .flex_1()
                         .min_w(px(0.0))
                         .text_size(px(13.0))
-                        .line_height(px(19.0))
+                        .line_height(px(DETAIL_LINE_H))
                         .text_color(rgb(SECONDARY))
                         .child(value),
                 )
@@ -806,11 +812,11 @@ impl MainView {
         let mut facts = div().flex().flex_col().gap(px(10.0));
         let mut has_facts = false;
         if let Some(loc) = &event.location {
-            facts = facts.child(icon_row("◎", CAPTION, loc.clone()));
+            facts = facts.child(icon_row(location_icon(), loc.clone()));
             has_facts = true;
         }
         if let Some(org) = &event.organizer {
-            facts = facts.child(icon_row("◉", CAPTION, format!("Organized by {org}")));
+            facts = facts.child(icon_row(organizer_icon(), format!("Organized by {org}")));
             has_facts = true;
         }
         if reply_calendar.is_none()
@@ -822,7 +828,7 @@ impl MainView {
                 Response::Declined => ("✕", RED, "You declined"),
                 Response::NeedsAction => ("·", MUTED, "You haven't replied"),
             };
-            facts = facts.child(icon_row(mark, mark_color, text.into()));
+            facts = facts.child(icon_row(text_icon(mark, mark_color), text.into()));
             has_facts = true;
         }
         if let Some(link) = event.meet_link.clone() {
@@ -917,7 +923,7 @@ impl MainView {
                     .child(
                         control_group()
                             .w_full()
-                            .when(pending, |d| d.opacity(0.6))
+                            .when(pending, |d| d.opacity(RSVP_PENDING_OPACITY))
                             .children(segments),
                     ),
             );
@@ -986,7 +992,7 @@ impl MainView {
             );
         }
         if let Some(desc) = &event.description {
-            sections.push(icon_row("≡", CAPTION, desc.clone()));
+            sections.push(icon_row(description_icon(), desc.clone()));
         }
         if let Some(url) = event.html_link.clone() {
             sections.push(div().flex().child(link(
@@ -1012,7 +1018,7 @@ impl MainView {
             DETAIL_HEADER_TINT
         };
         let (strip, dot) = if declined {
-            (MUTED, tint(color, PANEL, 0.5))
+            (MUTED, tint(color, PANEL, DECLINED_DOT_TINT))
         } else {
             (color, color)
         };
@@ -1052,8 +1058,8 @@ impl MainView {
                                             div()
                                                 .flex_1()
                                                 .min_w(px(0.0))
-                                                .text_size(px(18.0))
-                                                .line_height(px(24.0))
+                                                .text_size(px(DETAIL_TITLE_PX))
+                                                .line_height(px(DETAIL_TITLE_LINE_H))
                                                 .font_weight(FontWeight::BOLD)
                                                 .text_color(rgb(TEXT))
                                                 .when(declined, |d| d.line_through())
@@ -1251,6 +1257,53 @@ impl Render for MainView {
             )
             .children(toast)
     }
+}
+
+/// Location fact icon: an open ring.
+fn location_icon() -> AnyElement {
+    div()
+        .size(px(DETAIL_ICON_PX))
+        .rounded_full()
+        .border(px(DETAIL_ICON_STROKE))
+        .border_color(rgb(CAPTION))
+        .into_any_element()
+}
+
+/// Organiser fact icon: a filled disc.
+fn organizer_icon() -> AnyElement {
+    div()
+        .size(px(DETAIL_ICON_DOT))
+        .rounded_full()
+        .bg(rgb(CAPTION))
+        .into_any_element()
+}
+
+/// Description fact icon: three stacked bars, like lines of text.
+fn description_icon() -> AnyElement {
+    let bar = || {
+        div()
+            .w(px(DETAIL_ICON_BAR_W))
+            .h(px(DETAIL_ICON_BAR_H))
+            .bg(rgb(CAPTION))
+    };
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(DETAIL_ICON_BAR_GAP))
+        .child(bar())
+        .child(bar())
+        .child(bar())
+        .into_any_element()
+}
+
+/// A text mark (the RSVP ✓ ? ✕ ·) in a fact row's icon column, on the same 13px line as its value.
+fn text_icon(mark: &'static str, color: u32) -> AnyElement {
+    div()
+        .text_size(px(13.0))
+        .line_height(px(DETAIL_LINE_H))
+        .text_color(rgb(color))
+        .child(mark)
+        .into_any_element()
 }
 
 /// "Copy sign-in link" + "Cancel", shown while a browser sign-in is pending.
