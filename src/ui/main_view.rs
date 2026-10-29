@@ -363,6 +363,18 @@ impl MainView {
 
     fn banner(&self, store: &Store, cx: &Context<Self>) -> Option<Div> {
         let problem = store.problem.clone()?;
+        let reauth = store.rsvp_reauth.clone().map(|email| {
+            button(
+                "reply-reauthorize",
+                "Sign in again",
+                ButtonStyle::Secondary,
+                Some(self.listener_click(cx, move |this, _, cx| {
+                    this.store
+                        .read(cx)
+                        .send(Command::ReauthorizeRsvp(email.clone()))
+                })),
+            )
+        });
         Some(
             div()
                 .flex()
@@ -388,6 +400,7 @@ impl MainView {
                         .text_color(rgb(0xffd9a0))
                         .child(problem),
                 )
+                .children(reauth)
                 .child(ghost_button(
                     "dismiss-problem",
                     "✕",
@@ -488,13 +501,13 @@ impl MainView {
                                         },
                                         c.color,
                                         store.is_visible(c),
-                                        self.listener_click(cx, move |this, _, cx| {
+                                        Some(self.listener_click(cx, move |this, _, cx| {
                                             let id = id.clone();
                                             this.store.update(cx, |s, cx| {
                                                 s.toggle_calendar(&id);
                                                 cx.notify();
                                             });
-                                        }),
+                                        })),
                                     )
                                 }))
                         }),
@@ -739,6 +752,64 @@ impl MainView {
                 Response::NeedsAction => "You haven't replied",
             };
             body = body.child(row("YOUR RESPONSE", text.into()));
+        }
+        if event.replyable()
+            && let Some(calendar) = store
+                .calendar(&event.calendar_id)
+                .filter(|calendar| store.reply_enabled(&calendar.account))
+                .cloned()
+        {
+            let current = event.self_response();
+            let pending = store.reply_pending(&event.calendar_id, &event.id);
+            let event_for_reply = Event::clone(event);
+            let buttons = [
+                ("rsvp-yes", "Yes", Response::Accepted),
+                ("rsvp-no", "No", Response::Declined),
+                ("rsvp-maybe", "Maybe", Response::Tentative),
+            ]
+            .into_iter()
+            .map(|(id, label, response)| {
+                let calendar = calendar.clone();
+                let event = event_for_reply.clone();
+                let on_click = (!pending && current != Some(response)).then(|| {
+                    self.listener_click(cx, move |this, _, cx| {
+                        this.store.update(cx, |store, cx| {
+                            if store.reply_enabled(&calendar.account)
+                                && store.optimistically_reply(
+                                    &event.calendar_id,
+                                    &event.id,
+                                    response,
+                                )
+                            {
+                                store.send(Command::Reply {
+                                    calendar: calendar.clone(),
+                                    event: Box::new(event.clone()),
+                                    response,
+                                });
+                                cx.notify();
+                            }
+                        });
+                    })
+                });
+                button(
+                    id,
+                    label,
+                    if current == Some(response) {
+                        ButtonStyle::Primary
+                    } else {
+                        ButtonStyle::Secondary
+                    },
+                    on_click,
+                )
+            });
+            body = body.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(caption("REPLY TO INVITATION"))
+                    .child(div().flex().gap_2().children(buttons)),
+            );
         }
         if let Some(org) = &event.organizer {
             body = body.child(row("ORGANIZER", org.clone()));

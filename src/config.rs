@@ -21,6 +21,8 @@ pub enum ViewMode {
 pub struct Prefs {
     /// Calendars the user toggled explicitly; others follow Google's `selected` flag.
     pub calendar_visibility: BTreeMap<String, bool>,
+    /// Accounts that have explicitly opted into RSVP and completed OAuth consent for it.
+    pub rsvp_accounts: std::collections::BTreeSet<String>,
     pub reminders: bool,
     pub clock_24h: bool,
     pub view: ViewMode,
@@ -35,6 +37,7 @@ impl Default for Prefs {
     fn default() -> Self {
         Self {
             calendar_visibility: BTreeMap::new(),
+            rsvp_accounts: std::collections::BTreeSet::new(),
             reminders: true,
             clock_24h: true,
             view: ViewMode::Month,
@@ -91,6 +94,7 @@ impl Prefs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     #[test]
     fn unknown_and_missing_fields_fall_back_to_defaults() {
@@ -98,5 +102,13 @@ mod tests {
         assert_eq!(p.view, ViewMode::Week);
         assert!(p.reminders);
         assert!(!p.show_declined);
+    }
+
+    #[test]
+    fn rsvp_accounts_are_opt_in_and_persist_per_account() {
+        assert!(Prefs::default().rsvp_accounts.is_empty());
+        let p: Prefs =
+            serde_json::from_str(r#"{"rsvp_accounts":["me@example.com"],"future":1}"#).unwrap();
+        assert_eq!(p.rsvp_accounts, BTreeSet::from(["me@example.com".into()]));
     }
 }

@@ -1,6 +1,7 @@
 //! `--demo` / `ANTARCTICAL_DEMO=1`: a worker that answers the same commands as the Google one with
 //! generated calendars, so the UI can be run and reviewed without an OAuth client.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 
 use jiff::civil::{Date, Weekday};
@@ -33,25 +34,32 @@ fn run(rx: mpsc::Receiver<Command>, tx: async_channel::Sender<SyncEvent>) {
     emit(SyncEvent::Accounts(vec![PERSONAL.into(), WORK.into()]));
     emit(SyncEvent::Calendars(cals.clone()));
     let today = Zoned::now().date();
-    let send_months = |months: &[Date]| {
+    let mut reply_enabled = HashSet::new();
+    let mut reply_overrides = HashMap::new();
+    let send_months = |months: &[Date], overrides: &HashMap<(String, String), Response>| {
         for &month in months {
             for cal in &cals {
+                let mut events = events_for(cal, month, today, &tz);
+                apply_reply_overrides(&mut events, overrides);
                 emit(SyncEvent::Month {
                     calendar_id: cal.id.clone(),
                     month,
-                    events: events_for(cal, month, today, &tz),
+                    events,
                 });
             }
         }
         emit(SyncEvent::Synced(Timestamp::now()));
     };
     let m = today.first_of_month();
-    send_months(&[model::add_months(m, -1), m, model::add_months(m, 1)]);
+    send_months(
+        &[model::add_months(m, -1), m, model::add_months(m, 1)],
+        &reply_overrides,
+    );
     while let Ok(cmd) = rx.recv() {
         match cmd {
-            Command::Want(_, months) => send_months(&months),
+            Command::Want(_, months) => send_months(&months, &reply_overrides),
             Command::Forget(_) => {}
-            Command::Refresh => send_months(&[m]),
+            Command::Refresh => send_months(&[m], &reply_overrides),
             Command::SaveClient { client_id, .. } => {
                 emit(SyncEvent::Client(Some(client_id)));
                 emit(SyncEvent::Notice(
@@ -62,9 +70,57 @@ fn run(rx: mpsc::Receiver<Command>, tx: async_channel::Sender<SyncEvent>) {
             Command::AddAccount | Command::RemoveAccount(_) | Command::CancelSignIn => emit(
                 SyncEvent::Notice("Demo mode: no Google account is used".into()),
             ),
+            Command::SetReplyEnabled { email, enabled } => {
+                if enabled {
+                    reply_enabled.insert(email.clone());
+                } else {
+                    reply_enabled.remove(&email);
+                }
+                emit(SyncEvent::ReplyAccess { email, enabled });
+            }
+            Command::ReauthorizeRsvp(email) => {
+                reply_enabled.insert(email.clone());
+                emit(SyncEvent::ReplyAccess {
+                    email,
+                    enabled: true,
+                });
+            }
+            Command::Reply {
+                calendar,
+                event,
+                response,
+            } => {
+                let event = *event;
+                let error = if !reply_enabled.contains(&calendar.account) {
+                    Some("Reply to invitations is not enabled for this account".into())
+                } else if event.calendar_id != calendar.id || !event.replyable() {
+                    Some("This event does not have a replyable self attendee".into())
+                } else {
+                    reply_overrides.insert((calendar.id.clone(), event.id.clone()), response);
+                    None
+                };
+                emit(SyncEvent::ReplyFinished {
+                    calendar_id: calendar.id,
+                    event_id: event.id,
+                    account: calendar.account,
+                    error,
+                    missing_scope: false,
+                });
+            }
             Command::DismissProblems => emit(SyncEvent::Problem(None)),
             Command::Shutdown => break,
             Command::SignInFinished(..) => {}
+        }
+    }
+}
+
+fn apply_reply_overrides(events: &mut [Event], overrides: &HashMap<(String, String), Response>) {
+    for event in events {
+        let key = (event.calendar_id.clone(), event.id.clone());
+        if let Some(response) = overrides.get(&key)
+            && let Some(attendee) = event.attendees.iter_mut().find(|attendee| attendee.is_self)
+        {
+            attendee.response = *response;
         }
     }
 }
@@ -102,6 +158,11 @@ fn person(name: &str, response: Response, is_self: bool, organizer: bool) -> Att
     Attendee {
         name: name.into(),
         email: format!("{}@example.com", name.to_lowercase().replace(' ', ".")),
+        display_name: Some(name.into()),
+        comment: None,
+        additional_guests: None,
+        optional: None,
+        resource: None,
         response,
         organizer,
         is_self,
@@ -278,4 +339,40 @@ fn events_for(cal: &Calendar, month: Date, today: Date, tz: &TimeZone) -> Vec<Ev
         out.push(e);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jiff::civil::date;
+
+    #[test]
+    fn demo_rsvp_overrides_survive_month_regeneration_locally() {
+        let tz = TimeZone::UTC;
+        let work = calendars()
+            .into_iter()
+            .find(|calendar| calendar.remote_id == WORK)
+            .unwrap();
+        let mut events = events_for(&work, date(2026, 10, 1), date(2026, 10, 1), &tz);
+        let event = events
+            .iter()
+            .find(|event| event.id == "1on1-2026-10-06")
+            .unwrap();
+        assert_eq!(event.self_response(), Some(Response::Accepted));
+        let overrides = HashMap::from([(
+            (event.calendar_id.clone(), event.id.clone()),
+            Response::Declined,
+        )]);
+
+        apply_reply_overrides(&mut events, &overrides);
+
+        assert_eq!(
+            events
+                .iter()
+                .find(|event| event.id == "1on1-2026-10-06")
+                .unwrap()
+                .self_response(),
+            Some(Response::Declined)
+        );
+    }
 }

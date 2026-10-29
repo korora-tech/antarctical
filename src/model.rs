@@ -81,7 +81,17 @@ pub struct Attendee {
     pub name: String,
     /// Email address used to identify the attendee.
     pub email: String,
-    /// Most recent response reported by Google.
+    /// The source `displayName`, kept separate from the UI fallback name for safe RSVP updates.
+    pub display_name: Option<String>,
+    /// Google's attendee comment, preserved when replacing the attendee array.
+    pub comment: Option<String>,
+    /// Additional guests attached to this attendee, preserved when replying.
+    pub additional_guests: Option<u32>,
+    /// Whether the attendee is optional, preserved when replying.
+    pub optional: Option<bool>,
+    /// Whether the attendee is a resource, preserved when replying.
+    pub resource: Option<bool>,
+    /// The most recent response reported by Google.
     pub response: Response,
     /// Whether Google identifies this attendee as the organizer.
     pub organizer: bool,
@@ -128,6 +138,13 @@ impl Event {
             .iter()
             .find(|a| a.is_self)
             .map(|a| a.response)
+    }
+
+    /// Whether this event has exactly one self attendee who is not its organizer.
+    pub fn replyable(&self) -> bool {
+        let mut self_attendees = self.attendees.iter().filter(|a| a.is_self);
+        matches!(self_attendees.next(), Some(attendee) if !attendee.organizer)
+            && self_attendees.next().is_none()
     }
 
     /// Whether the signed-in user declined this invitation.
@@ -282,6 +299,30 @@ mod tests {
             reminders: vec![],
             tentative: false,
         }
+    }
+
+    #[test]
+    fn only_one_non_organizer_self_attendee_can_reply() {
+        let person = |is_self, organizer| Attendee {
+            name: "Guest".into(),
+            email: "guest@example.com".into(),
+            display_name: Some("Guest".into()),
+            comment: None,
+            additional_guests: None,
+            optional: None,
+            resource: None,
+            response: Response::NeedsAction,
+            organizer,
+            is_self,
+        };
+        let mut event = timed("2026-10-21T09:00:00Z", "2026-10-21T10:00:00Z");
+        assert!(!event.replyable());
+        event.attendees = vec![person(true, false)];
+        assert!(event.replyable());
+        event.attendees = vec![person(true, true)];
+        assert!(!event.replyable());
+        event.attendees = vec![person(true, false), person(true, false)];
+        assert!(!event.replyable());
     }
 
     #[test]

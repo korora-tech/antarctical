@@ -26,7 +26,7 @@ Using your own client means you manage its access list separately from Antarctic
 
 The OAuth client must be of type **Desktop app**. It has no redirect URI setting: Google accepts any `http://127.0.0.1:<port>` redirect for desktop clients. If Google reports `redirect_uri_mismatch`, check that you created a Desktop app client rather than a Web application client.
 
-Sign-in uses the installed-app flow: authorization code with PKCE and a one-shot loopback redirect to `http://127.0.0.1:<random port>`. The scopes requested are `openid`, `userinfo.email`, `userinfo.profile`, `calendar` and `calendar.app.created`; the account's email is read from its primary calendar. Existing accounts with an older read-only grant retain it until they are added again.
+Sign-in uses the installed-app flow: authorization code with PKCE and a one-shot loopback redirect to `http://127.0.0.1:<random port>`. By default, sign-in requests `calendar.readonly`; the account's email is read from its primary calendar list entry. Enabling **Reply to invitations** for one account starts a fresh sign-in that requests `calendar.events` and `calendar.calendarlist.readonly` for that account. Other accounts remain read-only. Turning replies off hides the controls and future sign-ins request read-only access, but does not revoke Google's existing grant; remove the account to revoke its authorization.
 
 ## Where secrets live
 

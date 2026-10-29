@@ -136,9 +136,9 @@ pub fn checkbox_row(
     label: impl Into<SharedString>,
     color: u32,
     checked: bool,
-    on_click: OnClick,
+    on_click: Option<OnClick>,
 ) -> Stateful<Div> {
-    div()
+    let row = div()
         .id(id)
         .w_full()
         .flex()
@@ -146,39 +146,43 @@ pub fn checkbox_row(
         .gap_2()
         .rounded_md()
         .px_2()
-        .py(px(5.0))
-        .hover(|s| s.bg(rgb(HOVER)).cursor_pointer())
-        .on_click(on_click)
-        .child(
-            div()
-                .size(px(14.0))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded_sm()
-                .border_1()
-                .border_color(rgb(color))
-                .when(checked, |d| d.bg(rgb(color)))
-                .when(checked, |d| {
-                    d.child(
-                        div()
-                            .text_size(px(10.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0x11111a))
-                            .child("✓"),
-                    )
-                }),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w(px(0.0))
-                .truncate()
-                .text_size(px(12.0))
-                .text_color(rgb(if checked { TEXT } else { MUTED }))
-                .child(label.into()),
-        )
+        .py(px(5.0));
+    let row = match on_click {
+        Some(handler) => row
+            .hover(|s| s.bg(rgb(HOVER)).cursor_pointer())
+            .on_click(handler),
+        None => row,
+    };
+    row.child(
+        div()
+            .size(px(14.0))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_sm()
+            .border_1()
+            .border_color(rgb(color))
+            .when(checked, |d| d.bg(rgb(color)))
+            .when(checked, |d| {
+                d.child(
+                    div()
+                        .text_size(px(10.0))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(rgb(0x11111a))
+                        .child("✓"),
+                )
+            }),
+    )
+    .child(
+        div()
+            .flex_1()
+            .min_w(px(0.0))
+            .truncate()
+            .text_size(px(12.0))
+            .text_color(rgb(if checked { TEXT } else { MUTED }))
+            .child(label.into()),
+    )
 }
 
 pub fn card(title: impl Into<SharedString>) -> Div {
