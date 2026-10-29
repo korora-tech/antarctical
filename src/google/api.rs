@@ -14,7 +14,10 @@ use crate::model::{
 const BASE: &str = "https://www.googleapis.com/calendar/v3";
 const BODY_LIMIT: u64 = 32 * 1024 * 1024;
 
-const CALENDAR_FIELDS: &str = "items(id,summary,summaryOverride,backgroundColor,primary,selected,hidden,defaultReminders),nextPageToken";
+const CALENDAR_FIELDS: &str = concat!(
+    "items(id,summary,summaryOverride,backgroundColor,primary,selected,hidden,defaultReminders),",
+    "nextPageToken",
+);
 const EVENT_FIELDS: &str = "items(id,status,summary,description,location,htmlLink,hangoutLink,\
     start,end,colorId,eventType,attendees(email,displayName,responseStatus,organizer,self),\
     organizer(email,displayName,self),reminders,conferenceData(entryPoints(entryPointType,uri))),\

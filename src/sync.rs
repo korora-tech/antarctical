@@ -310,7 +310,10 @@ impl Worker {
                 let _ = self.secrets.clear_tokens();
                 self.sticky.insert(
                     "tokens".into(),
-                    format!("Stored sign-ins were unreadable ({e}) and were reset; add your accounts again."),
+                    format!(
+                        "Stored sign-ins were unreadable ({e}) and were reset; \
+                         add your accounts again."
+                    ),
                 );
                 BTreeMap::new()
             }

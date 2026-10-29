@@ -22,6 +22,30 @@ const CREDENTIALS_URL: &str = "https://console.cloud.google.com/apis/credentials
 const CALENDAR_API_URL: &str =
     "https://console.cloud.google.com/apis/library/calendar-json.googleapis.com";
 const CONSENT_URL: &str = "https://console.cloud.google.com/auth/overview";
+const CLIENT_INTRO: &str = concat!(
+    "Antarctical signs in with its own OAuth client, so there is nothing to set up. To use a ",
+    "client you own instead, create one and save it here; its ID and secret are stored only in ",
+    "your system keyring (Secret Service: GNOME Keyring, KWallet, KeePassXC…). Switching ",
+    "clients signs out every account.",
+);
+const SETUP_PROJECT: &str = "In Google Cloud, create a project and enable the Google Calendar API.";
+const SETUP_CONSENT: &str = concat!(
+    "Configure the OAuth consent screen (External is fine) and add your Google account as a ",
+    "test user.",
+);
+const SETUP_CREDENTIALS: &str =
+    "Create credentials → OAuth client ID → Application type: Desktop app.";
+const SETUP_SAVE: &str = "Paste the client ID and client secret below and save.";
+const STATUS_DEMO: &str = "Demo mode: kept in memory, not in the keyring";
+const STATUS_LOCKED: &str = "Keyring locked: unlock it and press Ctrl+R";
+const STATUS_SAVED: &str = "Client ID and secret are stored in the keyring";
+const STATUS_BUILTIN: &str = "Using the built-in client";
+const ACCOUNT_SIGN_IN_INFO: &str =
+    "No account yet. Each account's refresh token is kept in the keyring.";
+const ACCOUNT_SIGNED_IN_INFO: &str =
+    "Each account's refresh token is kept in the keyring; removing an account revokes it.";
+const SIGN_IN_PENDING_INFO: &str =
+    "Waiting for you to choose an account and approve access in the browser…";
 
 pub enum SettingsEvent {
     Close,
@@ -166,115 +190,124 @@ impl Render for SettingsView {
         let show_declined = store.prefs.show_declined;
         let secret_masked = self.client_secret.read(cx).is_masked();
 
-        let client_card = card("Google OAuth client")
-            .child(body_text(
-                "Antarctical signs in with its own OAuth client, so there is nothing to set up. \
-                 To use a client you own instead, create one and save it here; its ID and secret \
-                 are stored only in your system keyring (Secret Service: GNOME Keyring, KWallet, \
-                 KeePassXC…). Switching clients signs out every account.",
-            ))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(Self::step("1", "In Google Cloud, create a project and enable the Google Calendar API."))
-                    .child(Self::step("2", "Configure the OAuth consent screen (External is fine) and add your Google account as a test user."))
-                    .child(Self::step("3", "Create credentials → OAuth client ID → Application type: Desktop app."))
-                    .child(Self::step("4", "Paste the client ID and client secret below and save.")),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap_2()
-                    .child(button("open-api", "Enable Calendar API", ButtonStyle::Secondary, Some(Box::new(|_, _, cx| cx.open_url(CALENDAR_API_URL)))))
-                    .child(button("open-consent", "Consent screen", ButtonStyle::Secondary, Some(Box::new(|_, _, cx| cx.open_url(CONSENT_URL)))))
-                    .child(button("open-creds", "Credentials", ButtonStyle::Secondary, Some(Box::new(|_, _, cx| cx.open_url(CREDENTIALS_URL))))),
-            )
-            .child(Self::field(
-                "CLIENT ID",
-                "Ends in .apps.googleusercontent.com",
-                self.client_id.clone(),
-            ))
-            .child(
-                div()
-                    .flex()
-                    .items_end()
-                    .gap_2()
-                    .child(div().flex_1().child(Self::field(
-                        "CLIENT SECRET",
-                        "Never shown again after saving",
-                        self.client_secret.clone(),
-                    )))
-                    .child(div().pb(px(22.0)).child(button(
-                        "toggle-secret",
-                        if secret_masked { "Show" } else { "Hide" },
-                        ButtonStyle::Secondary,
-                        Some(self.click(cx, |this, _, cx| {
-                            this.client_secret.update(cx, |i, cx| {
-                                let masked = i.is_masked();
-                                i.set_masked(!masked, cx)
-                            })
-                        })),
-                    ))),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(div().size(px(7.0)).rounded_full().bg(rgb(if stored_id.is_some() { GREEN } else { DISABLED })))
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .text_color(rgb(MUTED))
-                                    .child(match (&stored_id, demo) {
-                                        (_, true) => "Demo mode: kept in memory, not in the keyring".to_string(),
-                                        (None, false) if auth == AuthState::Locked => "Keyring locked: unlock it and press Ctrl+R".to_string(),
-                                        (Some(_), false) => "Client ID and secret are stored in the keyring".to_string(),
-                                        (None, false) => "Using the built-in client".to_string(),
-                                    }),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .when(stored_id.is_some(), |d| {
-                                d.child(button(
-                                    "remove-client",
-                                    "Use built-in client",
-                                    ButtonStyle::Danger,
-                                    Some(self.send(cx, || Command::ClearClient)),
-                                ))
-                            })
-                            .child(button(
-                                "save-client",
-                                "Save to keyring",
-                                ButtonStyle::Primary,
-                                Some(self.click(cx, |this, _, cx| this.save(cx))),
-                            )),
-                    ),
-            );
-
+        let client_card =
+            card("Google OAuth client")
+                .child(body_text(CLIENT_INTRO))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(Self::step("1", SETUP_PROJECT))
+                        .child(Self::step("2", SETUP_CONSENT))
+                        .child(Self::step("3", SETUP_CREDENTIALS))
+                        .child(Self::step("4", SETUP_SAVE)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_2()
+                        .child(button(
+                            "open-api",
+                            "Enable Calendar API",
+                            ButtonStyle::Secondary,
+                            Some(Box::new(|_, _, cx| cx.open_url(CALENDAR_API_URL))),
+                        ))
+                        .child(button(
+                            "open-consent",
+                            "Consent screen",
+                            ButtonStyle::Secondary,
+                            Some(Box::new(|_, _, cx| cx.open_url(CONSENT_URL))),
+                        ))
+                        .child(button(
+                            "open-creds",
+                            "Credentials",
+                            ButtonStyle::Secondary,
+                            Some(Box::new(|_, _, cx| cx.open_url(CREDENTIALS_URL))),
+                        )),
+                )
+                .child(Self::field(
+                    "CLIENT ID",
+                    "Ends in .apps.googleusercontent.com",
+                    self.client_id.clone(),
+                ))
+                .child(
+                    div()
+                        .flex()
+                        .items_end()
+                        .gap_2()
+                        .child(div().flex_1().child(Self::field(
+                            "CLIENT SECRET",
+                            "Never shown again after saving",
+                            self.client_secret.clone(),
+                        )))
+                        .child(div().pb(px(22.0)).child(button(
+                            "toggle-secret",
+                            if secret_masked { "Show" } else { "Hide" },
+                            ButtonStyle::Secondary,
+                            Some(self.click(cx, |this, _, cx| {
+                                this.client_secret.update(cx, |i, cx| {
+                                    let masked = i.is_masked();
+                                    i.set_masked(!masked, cx)
+                                })
+                            })),
+                        ))),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_3()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    div().size(px(7.0)).rounded_full().bg(rgb(
+                                        if stored_id.is_some() { GREEN } else { DISABLED },
+                                    )),
+                                )
+                                .child(div().text_size(px(11.0)).text_color(rgb(MUTED)).child(
+                                    match (&stored_id, demo) {
+                                        (_, true) => STATUS_DEMO.to_string(),
+                                        (None, false) if auth == AuthState::Locked => {
+                                            STATUS_LOCKED.to_string()
+                                        }
+                                        (Some(_), false) => STATUS_SAVED.to_string(),
+                                        (None, false) => STATUS_BUILTIN.to_string(),
+                                    },
+                                )),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .gap_2()
+                                .when(stored_id.is_some(), |d| {
+                                    d.child(button(
+                                        "remove-client",
+                                        "Use built-in client",
+                                        ButtonStyle::Danger,
+                                        Some(self.send(cx, || Command::ClearClient)),
+                                    ))
+                                })
+                                .child(button(
+                                    "save-client",
+                                    "Save to keyring",
+                                    ButtonStyle::Primary,
+                                    Some(self.click(cx, |this, _, cx| this.save(cx))),
+                                )),
+                        ),
+                );
         let account_card = {
             let intro = match &auth {
                 AuthState::Starting => "Reading the keyring…",
                 AuthState::Locked => "The keyring is locked. Unlock it and press Ctrl+R.",
                 AuthState::Demo => "Demo mode: showing generated accounts.",
-                AuthState::Ready if accounts.is_empty() => {
-                    "No account yet. Each account's refresh token is kept in the keyring."
-                }
-                AuthState::Ready => {
-                    "Each account's refresh token is kept in the keyring; removing an account revokes it."
-                }
+                AuthState::Ready if accounts.is_empty() => ACCOUNT_SIGN_IN_INFO,
+                AuthState::Ready => ACCOUNT_SIGNED_IN_INFO,
             };
             let can_add = auth == AuthState::Ready;
             let rows = accounts.iter().map(|email| {
@@ -331,9 +364,7 @@ impl Render for SettingsView {
                         .flex()
                         .flex_col()
                         .gap_2()
-                        .child(body_text(
-                            "Waiting for you to choose an account and approve access in the browser…",
-                        ))
+                        .child(body_text(SIGN_IN_PENDING_INFO))
                         .child(
                             div()
                                 .flex()
