@@ -5,7 +5,7 @@ import Page from "../layouts/Page.astro";
 <Page
   title="Privacy policy"
   description="How Antarctical handles your Google account and calendar data."
-  updated="28 October 2026"
+  updated="24 November 2026"
 >
   <p>
     This policy explains how Antarctical, a desktop calendar app for Linux, handles
@@ -27,21 +27,26 @@ import Page from "../layouts/Page.astro";
     </thead>
     <tbody>
       <tr>
-        <td><code>openid</code>, <code>userinfo.email</code>, <code>userinfo.profile</code></td>
-        <td>Identifies the signed-in account, so you can tell your accounts apart in the app.</td>
-      </tr>
-      <tr>
-        <td><code>calendar</code></td>
+        <td><code>calendar.readonly</code></td>
         <td>
-          Reads your calendar list and events (titles, times, locations, descriptions,
-          guests, video-call links and reminders) to display them. Editing features
-          use it to create, change or delete events and calendars, and only when you
-          ask Antarctical to.
+          The default permission. Reads your calendar list and events (titles, times,
+          locations, descriptions, guests, video-call links and reminders) so
+          Antarctical can display them and show reminders. It cannot change anything.
         </td>
       </tr>
       <tr>
-        <td><code>calendar.app.created</code></td>
-        <td>Manages calendars that Antarctical creates on your behalf, when you ask it to.</td>
+        <td>
+          <code>calendar.events</code> and <code>calendar.calendarlist.readonly</code>
+        </td>
+        <td>
+          Requested only if you turn on <strong>Reply to invitations</strong> for an
+          account. They replace the read-only permission for that account and let
+          Antarctical send your accept, decline or maybe response to an invitation, and
+          only when you click a reply button. Antarctical also reads the list of
+          calendars and the account's email address (the ID of its primary calendar)
+          with them. Creating and editing events, once added, will use this same
+          permission.
+        </td>
       </tr>
     </tbody>
   </table>
