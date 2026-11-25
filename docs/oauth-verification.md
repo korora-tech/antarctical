@@ -61,5 +61,5 @@ Before recording, use a Google account that is not a developer on the project, s
 
 ## Keep in sync
 
-- **Privacy policy:** says calendar data is held in memory only. When the persistent cache ships, change that sentence, the home page privacy note and `docs/google-calendar.md` in the same PR.
+- **Privacy policy:** says calendar data is held in memory and in an optional local offline copy (`cache.json`). Keep that sentence, the home page privacy note, the README and `docs/google-calendar.md` aligned with `src/cache.rs`.
 - **Editing:** when create/edit/delete ships, update the `calendar.events` justification and re-record step 5 if Google asks. Do not add scopes without updating the consent screen first; a scope missing from it makes sign-in fail with `invalid_scope`.

@@ -44,6 +44,8 @@ Sign-in uses the installed-app flow: authorization code with PKCE and a one-shot
 
 Preferences that are not secret (visible calendars, view, reminders, 24-hour clock, declined events) are saved in `$XDG_CONFIG_HOME/antarctical/settings.json`. `--demo` never writes this file.
 
+Unless you turn it off (Settings → Preferences → offline copy), the last-synced calendars and events within six months of today are saved in `$XDG_CACHE_HOME/antarctical/cache.json` (default `~/.cache/antarctical/`, mode 0600) and shown at startup until Google answers. The file is deleted when you turn the setting off or sign out of your last account. It is a snapshot, not Google sync tokens: those cannot be combined with the time window the app fetches.
+
 ## Sync
 
 - **Recurring events:** Google expands them (`singleEvents=true`), so every instance is a plain event.

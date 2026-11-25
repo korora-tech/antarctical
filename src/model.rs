@@ -3,6 +3,7 @@
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, ToSpan, Zoned};
+use serde::{Deserialize, Serialize};
 
 /// A half-open interval represented by its start and exclusive end instants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -14,7 +15,7 @@ pub struct TimeSpan {
 }
 
 /// A calendar the application can display, identified separately per Google account.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Calendar {
     /// Unique across accounts: [`Calendar::key`] of the account and the Google calendar id.
     /// Two accounts can subscribe to the same calendar, so the Google id alone is ambiguous.
@@ -43,7 +44,7 @@ impl Calendar {
 }
 
 /// An event's civil-date or absolute-time interval.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum When {
     /// A whole-date range; `end` is exclusive, as in iCalendar and the Google API.
     AllDay {
@@ -62,7 +63,7 @@ pub enum When {
 }
 
 /// RSVP state reported for an attendee.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Response {
     /// The attendee accepted the invitation.
     Accepted,
@@ -75,7 +76,7 @@ pub enum Response {
 }
 
 /// A person listed on an event invitation.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Attendee {
     /// Display name, falling back to the email address or an empty string.
     pub name: String,
@@ -101,7 +102,7 @@ pub struct Attendee {
 }
 
 /// Event data shared by the Google and demo sources.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Event {
     /// Google event identifier, unique within its calendar.
     pub id: String,

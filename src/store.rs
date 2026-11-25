@@ -76,6 +76,7 @@ pub struct Store {
     pending_replies: HashMap<(String, String), (Response, Response)>,
     pending_writes: HashMap<u64, PendingWrite>,
     next_ticket: u64,
+    cache: Option<crate::cache::Writer>,
 }
 
 impl Store {
@@ -101,7 +102,87 @@ impl Store {
             pending_replies: HashMap::new(),
             pending_writes: HashMap::new(),
             next_ticket: 1,
+            cache: None,
         }
+    }
+
+    /// Starts from the offline copy of the last sync (when there is one) and keeps it up to
+    /// date from now on. Whether anything is written is still governed by
+    /// [`Prefs::offline_cache`].
+    pub fn with_cache(mut self, writer: Option<crate::cache::Writer>) -> Self {
+        if self.prefs.offline_cache
+            && let Some(snapshot) = crate::cache::load()
+        {
+            self.restore(snapshot);
+        }
+        self.cache = writer;
+        self
+    }
+
+    fn restore(&mut self, snapshot: crate::cache::Snapshot) {
+        self.last_sync = snapshot.last_sync;
+        self.calendars = snapshot.calendars;
+        self.chunks = snapshot
+            .events
+            .into_iter()
+            .map(|(cal, months)| (cal, months.into_iter().collect()))
+            .collect();
+    }
+
+    /// What the offline copy holds: loaded months within half a year of today, without events
+    /// Google has not confirmed yet.
+    fn snapshot(&self) -> crate::cache::Snapshot {
+        let today = jiff::Zoned::now().date();
+        let this_month = crate::model::first_of_month(today);
+        let (from, to) = (
+            crate::model::add_months(this_month, -6),
+            crate::model::add_months(this_month, 6),
+        );
+        let events = self
+            .chunks
+            .iter()
+            .map(|(cal, months)| {
+                let months = months
+                    .iter()
+                    .filter(|(m, _)| **m >= from && **m <= to)
+                    .map(|(m, events)| {
+                        let confirmed = events
+                            .iter()
+                            .filter(|e| !e.id.starts_with(PENDING_ID_PREFIX))
+                            .cloned()
+                            .collect();
+                        (*m, confirmed)
+                    })
+                    .collect();
+                (cal.clone(), months)
+            })
+            .collect();
+        crate::cache::Snapshot {
+            version: crate::cache::VERSION,
+            last_sync: self.last_sync,
+            calendars: self.calendars.clone(),
+            events,
+        }
+    }
+
+    /// Writes the offline copy, or removes it when the preference is off or nobody is signed in.
+    fn persist(&self) {
+        let Some(writer) = &self.cache else { return };
+        if self.mode != Mode::Google {
+            return;
+        }
+        let snapshot = if self.prefs.offline_cache && !self.accounts.is_empty() {
+            self.snapshot()
+        } else {
+            crate::cache::Snapshot::default()
+        };
+        writer.save(snapshot);
+    }
+
+    pub fn set_offline_cache(&mut self, on: bool) {
+        self.prefs.offline_cache = on;
+        self.prefs.save();
+        self.persist();
     }
 
     /// Sends a command to the background sync worker.
@@ -498,6 +579,11 @@ impl Store {
                     self.last_sync = None;
                 }
                 let signed_in: HashSet<&str> = accounts.iter().map(String::as_str).collect();
+                // Offline data of an account that is gone must not outlive its sign-out.
+                self.calendars
+                    .retain(|c| signed_in.contains(c.account.as_str()));
+                let kept: HashSet<&str> = self.calendars.iter().map(|c| c.id.as_str()).collect();
+                self.chunks.retain(|cal, _| kept.contains(cal.as_str()));
                 let previous = self.prefs.rsvp_accounts.len();
                 self.prefs
                     .rsvp_accounts
@@ -506,6 +592,7 @@ impl Store {
                     self.prefs.save();
                 }
                 self.accounts = accounts;
+                self.persist();
             }
             SyncEvent::SigningIn(url) => self.signing_in = url,
             SyncEvent::Calendars(cals) => {
@@ -540,7 +627,10 @@ impl Store {
                     .insert(month, events);
             }
             SyncEvent::Busy(b) => self.busy = b,
-            SyncEvent::Synced(t) => self.last_sync = Some(t),
+            SyncEvent::Synced(t) => {
+                self.last_sync = Some(t);
+                self.persist();
+            }
             SyncEvent::Problem(p) => {
                 if p.is_none() {
                     self.rsvp_reauth = None;
@@ -816,6 +906,63 @@ mod tests {
             reminders: vec![],
             tentative: false,
         }
+    }
+
+    fn this_month() -> Date {
+        model::first_of_month(jiff::Zoned::now().date())
+    }
+
+    #[test]
+    fn the_offline_copy_leaves_out_unconfirmed_and_distant_events() {
+        let mut s = store();
+        let m = this_month();
+        let far = model::add_months(m, 8);
+        let day = m;
+        s.apply(SyncEvent::Month {
+            calendar_id: "a".into(),
+            month: m,
+            events: vec![
+                all_day("a", "real", day, day.tomorrow().unwrap()),
+                all_day("a", "pending-1", day, day.tomorrow().unwrap()),
+            ],
+        });
+        s.apply(SyncEvent::Month {
+            calendar_id: "a".into(),
+            month: far,
+            events: vec![all_day("a", "later", far, far.tomorrow().unwrap())],
+        });
+        let snap = s.snapshot();
+        let kept: Vec<&str> = snap.events["a"][&m].iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(kept, ["real"]);
+        assert!(!snap.events["a"].contains_key(&far));
+        assert_eq!(snap.calendars.len(), 2);
+    }
+
+    #[test]
+    fn restoring_a_snapshot_shows_its_events_and_signing_out_drops_them() {
+        let mut s = store();
+        let m = this_month();
+        s.apply(SyncEvent::Month {
+            calendar_id: "a".into(),
+            month: m,
+            events: vec![all_day("a", "real", m, m.tomorrow().unwrap())],
+        });
+        let snap = s.snapshot();
+
+        let mut fresh = store_with_rx().0;
+        fresh.calendars.clear();
+        fresh.chunks.clear();
+        fresh.restore(snap);
+        assert!(fresh.has_month(m));
+        assert_eq!(fresh.calendars.len(), 2);
+
+        // Only me@x is still signed in: work@x's calendar and events go.
+        fresh.apply(SyncEvent::Accounts(vec!["me@x".into()]));
+        assert_eq!(fresh.calendars.len(), 1);
+        assert!(fresh.has_month(m));
+        fresh.apply(SyncEvent::Accounts(vec![]));
+        assert!(fresh.calendars.is_empty());
+        assert!(!fresh.has_month(m));
     }
 
     fn invitation() -> Event {
