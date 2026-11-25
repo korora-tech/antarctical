@@ -9,8 +9,14 @@ All notable changes to Antarctical are recorded here. The format follows [Keep a
 - The per-account opt-in is now **Edit events and reply to invitations**. It uses the same `calendar.events` scope as before, so existing opt-ins keep working.
 - Privacy policy lists the OAuth scopes the app actually requests (`calendar.readonly` by default; `calendar.events` and `calendar.calendarlist.readonly` only after enabling Edit events and reply to invitations).
 
+### Removed
+
+- The Dux next-event widget (`dux-plugin/`, the `dux-plugin` package, and its installation by `programs.antarctical.dux.enable`). The Dux calendar backend is unchanged.
+
 ### Added
 
+- **Noctalia:** `antarctical vdir DIR` mirrors the calendars shown in the sidebar into a vdir that Noctalia's own calendar reads (a `type = "vdir"` account), so its Calendar tab shows your events. `noctalia-plugin/` adds a bar widget with the current or next event today and a Join button for video calls, plus `/cal` launcher search. Home Manager: `programs.antarctical.noctalia.enable` and `programs.antarctical.vdir.enable`.
+- **Command line:** `antarctical events [--days N] [--watch]` prints the running app's agenda as JSON, `antarctical show [--date YYYY-MM-DD]` brings its window forward on a date, and `antarctical refresh` syncs now.
 - **Notification actions:** reminder notifications now have a Join button (events with a video call) that opens the call, and Snooze 5 min, which shows the reminder again with the time left worked out afresh (dropped if the event is over by then). Snoozes are kept in memory only, so quitting the app cancels them. Notifications stay up for 30 seconds instead of 15.
 - **Edit or delete a whole repeating series:** on one occurrence of a series you organise, the editor has a "Changes apply to" button. Choose "All events in the series" to change the title, location, guests and reminders of every occurrence, or to move them all to a new time of day and length (their dates stay), or to delete the series. Occurrences you changed individually keep their own edits where Google does. Not offered for "this and following".
 - **Move an event to another calendar:** the editor has a Calendar button (shown for events you organise, not single occurrences of a series) that steps through the other writable calendars of the same account. Saving moves the event with Google's move call and applies any other edits afterwards; if the move fails the event goes back, and if only the later edit fails you are told the event was moved.

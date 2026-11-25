@@ -23,7 +23,7 @@ A native Google Calendar viewer for Linux, built with Rust and [GPUI](https://ww
 - **Invitation replies:** opt in per account to answer invitations with Yes, No or Maybe; replies update only that event occurrence.
 - **Automatic sync:** refresh every five minutes, refresh manually, and retry temporary network failures.
 - **Local credential storage:** refresh tokens stay in your system keyring; a copy of your last-synced calendar is kept in `$XDG_CACHE_HOME/antarctical/cache.json` (mode 0600; switch it off in Settings). No app analytics or telemetry.
-- **Linux desktop integration:** Wayland and X11, Nix packages, Home Manager autostart, and an optional Dux next-event widget.
+- **Linux desktop integration:** Wayland and X11, Nix packages, Home Manager autostart, your calendars in the Noctalia shell's own calendar, and a next-event bar widget for it.
 
 - **Quick add and editing:** press `n` and type `Lunch with Sam tomorrow 1pm at Dishoom`. A live preview shows what was understood; Enter creates the event. Select an event and press `e` to change its title, time or location, or to delete it.
 
@@ -37,7 +37,7 @@ On a Linux desktop with [Nix](https://nixos.org/download/) and flakes enabled:
 nix run github:korora-tech/antarctical -- --demo
 ```
 
-Demo mode generates accounts and events for all four views. It does not connect to Google, save preferences, or expose generated events to Dux. It can run alongside your signed-in instance.
+Demo mode generates accounts and events for all four views. It does not connect to Google, save preferences, or expose generated events to desktop shells. It can run alongside your signed-in instance.
 
 ## Install and run
 
@@ -72,7 +72,7 @@ You can also configure your own Google Desktop OAuth client in Settings. See the
 
 ### Start with your desktop
 
-`antarctical --hidden` starts the app in the tray. The [Home Manager module](docs/desktop-integration.md#home-manager) can install it and run it as a systemd user service. The same guide covers the [Dux calendar backend](docs/desktop-integration.md#dux-calendar-backend) and [next-event widget](docs/desktop-integration.md#next-event-bar-widget).
+`antarctical --hidden` starts the app in the tray. The [Home Manager module](docs/desktop-integration.md#home-manager) can install it and run it as a systemd user service. The same guide covers [Noctalia](docs/desktop-integration.md#noctalia) (your events in its calendar, and a next-event bar widget), the [command line](docs/desktop-integration.md#command-line) and the [Dux calendar backend](docs/desktop-integration.md#dux-calendar-backend).
 
 ## Keyboard shortcuts
 
@@ -130,9 +130,10 @@ bun run build
 | `src/ui/` | GPUI calendar views, event details, settings and tray window |
 | `src/google/`, `src/secrets.rs`, `src/sync.rs` | Google API, OAuth, keyring storage and sync |
 | `src/demo.rs` | Generated demo calendars and events |
-| `src/tray.rs`, `src/reminders.rs`, `src/dankcal.rs` | Desktop tray, notifications and Dux socket |
+| `src/tray.rs`, `src/reminders.rs`, `src/dankcal.rs` | Desktop tray, notifications and the socket desktop shells read |
+| `src/cli.rs`, `src/vdir.rs` | Subcommands for the running app: `events`, `vdir`, `show`, `refresh` |
 | `data/branding/`, `src/branding.rs` | Shared penguin artwork and embedded app assets |
-| `dux-plugin/`, `nix/hm-module.nix` | Dux widget and Home Manager module |
+| `noctalia-plugin/`, `nix/` | Noctalia plugin, its Nix package and the Home Manager module |
 | `website/` | Website, legal pages and real demo screenshots |
 
 Bug reports should include your desktop environment, Wayland or X11, how you installed the app, and steps to reproduce. Demo mode is useful for sharing a screenshot without exposing your calendar.

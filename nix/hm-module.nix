@@ -28,10 +28,25 @@ in
       a systemd user service that starts Antarctical in the tray (`--hidden`) with the
       graphical session'';
 
+    noctalia.enable = lib.mkEnableOption ''
+      the Noctalia plugin, linked into Noctalia's local plugin directory as
+      `korora-tech/antarctical` (enable it in Noctalia and add its
+      `korora-tech/antarctical:bar` widget to a bar yourself)'';
+
+    vdir.enable = lib.mkEnableOption ''
+      a systemd user service that mirrors the calendars shown in Antarctical's sidebar into a
+      vdir (`antarctical vdir`), for calendars that read one, such as Noctalia's'';
+
+    vdir.path = lib.mkOption {
+      type = lib.types.str;
+      default = "${config.xdg.dataHome}/antarctical/calendars";
+      defaultText = lib.literalExpression ''"''${config.xdg.dataHome}/antarctical/calendars"'';
+      description = "The directory `vdir.enable` mirrors the calendars into.";
+    };
+
     dux.enable = lib.mkEnableOption ''
       the Dux shell integration: start Antarctical before Dux (`dms.service`) so Dux finds its
-      dankcal socket, and, when the Dux Home Manager module is imported, install the
-      `antarcticalNextEvent` bar widget (enable it and add it to a bar in Dux yourself)'';
+      dankcal socket'';
 
     dux.setCalendarBackend = lib.mkOption {
       type = lib.types.bool;
@@ -83,22 +98,39 @@ in
         };
       })
 
+      (lib.mkIf cfg.noctalia.enable {
+        xdg.dataFile."noctalia/plugins/antarctical".source = pkgs.callPackage ./noctalia-plugin.nix {
+          antarctical = cfg.package;
+        };
+      })
+
+      (lib.mkIf cfg.vdir.enable {
+        systemd.user.services.antarctical-vdir = {
+          Unit = {
+            Description = "Antarctical calendars as a vdir";
+            After = [ "graphical-session.target" ];
+            PartOf = [ "graphical-session.target" ];
+          };
+          # The mirror waits for Antarctical by itself; it only exits when the directory
+          # cannot be written.
+          Service = {
+            ExecStart = "${lib.getExe cfg.package} vdir ${lib.escapeShellArg cfg.vdir.path}";
+            Restart = "on-failure";
+            RestartSec = 30;
+          };
+          Install.WantedBy = [ "graphical-session.target" ];
+        };
+      })
+
       # Dux looks for the socket at start and then only for about a minute.
       (lib.mkIf cfg.dux.enable {
         systemd.user.services.antarctical.Unit.Before = [ "dms.service" ];
       })
 
       (lib.optionalAttrs hasDux {
-        # A plugin without `settings` leaves plugin_settings.json and settings.json alone
-        # (Dux's module only manages them when settings are declared).
-        programs.dank-material-shell = lib.mkMerge [
-          (lib.mkIf cfg.dux.enable {
-            plugins.antarcticalNextEvent.src = self.packages.${system}.dux-plugin;
-          })
-          (lib.mkIf (cfg.dux.enable && cfg.dux.setCalendarBackend) {
-            settings.calendarBackend = "dankcal";
-          })
-        ];
+        programs.dank-material-shell = lib.mkIf (cfg.dux.enable && cfg.dux.setCalendarBackend) {
+          settings.calendarBackend = "dankcal";
+        };
       })
     ]
   );

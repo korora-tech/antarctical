@@ -8,12 +8,14 @@
 //! `calendars.list`, `events.list` and `tasks.list` (always empty); every write is refused.
 //!
 //! The same socket makes Antarctical single-instance: a second launch finds it, recognises it
-//! with the private `antarctical.hello`, asks it to `antarctical.show` and exits.
+//! with the private `antarctical.hello`, asks it to `antarctical.show` and exits. The
+//! command-line client (`cli.rs`) finds the running instance the same way and adds
+//! `antarctical.show` with a `date` and `antarctical.refresh`.
 //!
 //! Plain threads (one to accept, one per connection) read a [`Snapshot`] that the UI thread
 //! publishes whenever the store changes.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -58,6 +60,8 @@ const WRITE_METHODS: &[&str] = &[
 pub enum ShellAction {
     /// Another launch of Antarctical: bring the main window forward.
     Show,
+    /// Bring the main window forward on this date.
+    ShowAt(Date),
 }
 
 // ----- snapshot -------------------------------------------------------------------------------
@@ -323,9 +327,7 @@ const HAND_OFF_WAIT: Duration = Duration::from_secs(3);
 /// cleans up stale sockets and binds; a launch that finds it taken only looks for the holder's
 /// socket, retrying briefly while the holder binds.
 pub fn claim(show: bool) -> Claim {
-    let explicit = std::env::var_os("DANKCAL_SOCKET")
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from);
+    let explicit = explicit_socket();
     let runtime = runtime_dir();
     let lock_path = match (&runtime, &explicit) {
         (Some(dir), _) => dir.join("antarctical.lock"),
@@ -391,6 +393,25 @@ pub fn claim(show: bool) -> Claim {
         Ok(l) => Claim::Bound(l),
         Err(e) => Claim::Unavailable(format!("cannot listen on {}: {e}", path.display())),
     }
+}
+
+/// `$DANKCAL_SOCKET`, when set.
+fn explicit_socket() -> Option<PathBuf> {
+    std::env::var_os("DANKCAL_SOCKET")
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+}
+
+/// The socket a running Antarctical serves, for the command-line client. Looks where
+/// [`claim`] binds, without taking the launch lock.
+pub(crate) fn running_socket() -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = explicit_socket().into_iter().collect();
+    if let Some(dir) = runtime_dir() {
+        candidates.extend(pid_sockets(&dir));
+    }
+    candidates
+        .into_iter()
+        .find(|path| matches!(probe(path), Probe::Antarctical(..)))
 }
 
 /// Probes `candidates`: hands over to a running Antarctical, or gives up when a dankcal daemon
@@ -501,15 +522,22 @@ enum Probe {
     Dead,
 }
 
-/// A blocking request connection, for probing and handing over.
-struct Client {
+/// Longest reply the client accepts. Replies are not bound by [`MAX_LINE`]: a few months of
+/// events with their descriptions run to megabytes.
+const MAX_REPLY: u64 = 64 * 1024 * 1024;
+
+/// A blocking connection to the socket: for probing, handing over, and the command-line
+/// client.
+pub(crate) struct Client {
     writer: UnixStream,
     reader: BufReader<UnixStream>,
     next_id: u64,
+    /// The start of a push that had not fully arrived when [`Client::next_push`] timed out.
+    partial: Vec<u8>,
 }
 
 impl Client {
-    fn connect(path: &Path) -> io::Result<Self> {
+    pub(crate) fn connect(path: &Path) -> io::Result<Self> {
         let stream = UnixStream::connect(path)?;
         stream.set_read_timeout(Some(IO_TIMEOUT))?;
         stream.set_write_timeout(Some(IO_TIMEOUT))?;
@@ -517,7 +545,61 @@ impl Client {
             reader: BufReader::new(stream.try_clone()?),
             writer: stream,
             next_id: 0,
+            partial: vec![],
         })
+    }
+
+    /// Sends a request and returns its `result`. An `error` reply becomes an [`io::Error`]
+    /// carrying the server's message.
+    pub(crate) fn request(&mut self, method: &str, params: Value) -> io::Result<Value> {
+        self.next_id += 1;
+        let mut line = json!({"id": self.next_id, "method": method, "params": params}).to_string();
+        line.push('\n');
+        self.writer.write_all(line.as_bytes())?;
+        self.reader.get_ref().set_read_timeout(Some(IO_TIMEOUT))?;
+        let mut buf = vec![];
+        self.reader
+            .by_ref()
+            .take(MAX_REPLY)
+            .read_until(b'\n', &mut buf)?;
+        if buf.pop() != Some(b'\n') {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        }
+        let mut reply: Value = serde_json::from_slice(&buf).map_err(io::Error::other)?;
+        match reply.get("error") {
+            Some(error) => Err(io::Error::other(
+                error.as_str().unwrap_or("request failed").to_string(),
+            )),
+            None => Ok(reply["result"].take()),
+        }
+    }
+
+    /// Waits up to `timeout` for the next push on a subscribed connection. `Ok(None)`:
+    /// nothing arrived in time. An error means the connection is gone.
+    pub(crate) fn next_push(&mut self, timeout: Duration) -> io::Result<Option<Value>> {
+        self.reader.get_ref().set_read_timeout(Some(timeout))?;
+        match self.reader.read_until(b'\n', &mut self.partial) {
+            Ok(_) if self.partial.last() == Some(&b'\n') => {
+                let push = serde_json::from_slice(&self.partial).map_err(io::Error::other);
+                self.partial.clear();
+                push.map(Some)
+            }
+            // The server closed the connection (possibly mid-line).
+            Ok(_) => Err(io::ErrorKind::UnexpectedEof.into()),
+            // A timeout keeps what has arrived of the line for the next call.
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                if self.partial.len() > MAX_LINE {
+                    return Err(io::Error::other("push too long"));
+                }
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     fn call(&mut self, method: &str) -> io::Result<Value> {
@@ -561,12 +643,43 @@ struct Shared {
     connections: AtomicUsize,
     next_conn: AtomicU64,
     actions: async_channel::Sender<ShellAction>,
-    /// The sync worker, and the months last asked of it.
-    want: Mutex<(SyncHandle, Vec<Date>)>,
+    /// The sync worker and the months its clients read.
+    want: Mutex<Wanted>,
     tz: TimeZone,
     path: PathBuf,
     file: (u64, u64),
     stopped: AtomicBool,
+}
+
+/// The months each connection last asked about. The sync worker is told their union, so a
+/// widget reading this week and an export reading half a year do not take turns.
+struct Wanted {
+    sync: SyncHandle,
+    by_conn: BTreeMap<u64, Vec<Date>>,
+    /// What the sync worker was last told.
+    sent: Vec<Date>,
+}
+
+impl Wanted {
+    fn tell(&mut self) {
+        let months: Vec<Date> = self
+            .by_conn
+            .values()
+            .flatten()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if months == self.sent {
+            return;
+        }
+        self.sent = months.clone();
+        self.sync.send(if months.is_empty() {
+            Command::Forget(ViewId::Shell)
+        } else {
+            Command::Want(ViewId::Shell, months)
+        });
+    }
 }
 
 struct Subscriber {
@@ -596,7 +709,11 @@ impl Server {
             connections: AtomicUsize::new(0),
             next_conn: AtomicU64::new(0),
             actions,
-            want: Mutex::new((sync, vec![])),
+            want: Mutex::new(Wanted {
+                sync,
+                by_conn: BTreeMap::new(),
+                sent: vec![],
+            }),
             tz,
             path,
             file,
@@ -617,11 +734,12 @@ impl Server {
                         continue;
                     }
                     let shared = accept.clone();
+                    let conn = accept.next_conn.fetch_add(1, Ordering::Relaxed);
                     let spawned = std::thread::Builder::new()
                         .name("antarctical-dankcal-conn".into())
                         .spawn(move || {
-                            let _ = serve(&shared, stream);
-                            shared.disconnected();
+                            let _ = serve(&shared, conn, stream);
+                            shared.disconnected(conn);
                         });
                     if spawned.is_err() {
                         accept.connections.fetch_sub(1, Ordering::SeqCst);
@@ -680,14 +798,12 @@ impl Server {
 }
 
 impl Shared {
-    /// With the last client gone, the shell's months are no longer kept fresh.
-    fn disconnected(&self) {
-        if self.connections.fetch_sub(1, Ordering::SeqCst) == 1 {
-            let mut want = self.want.lock().expect("want lock");
-            if !want.1.is_empty() {
-                want.1.clear();
-                want.0.send(Command::Forget(ViewId::Shell));
-            }
+    /// A client's months are no longer kept fresh once it is gone.
+    fn disconnected(&self, conn: u64) {
+        self.connections.fetch_sub(1, Ordering::SeqCst);
+        let mut want = self.want.lock().expect("want lock");
+        if want.by_conn.remove(&conn).is_some() {
+            want.tell();
         }
     }
 
@@ -698,8 +814,8 @@ impl Shared {
             .retain(|s| s.conn != conn);
     }
 
-    /// Asks the sync worker to keep the months of `[from, to)` fresh, when they changed.
-    fn want_range(&self, from: Timestamp, to: Timestamp) {
+    /// Asks the sync worker to keep the months of `[from, to)` fresh for `conn`.
+    fn want_range(&self, conn: u64, from: Timestamp, to: Timestamp) {
         let from = from.to_zoned(self.tz.clone()).date();
         let to = add_days(to.to_zoned(self.tz.clone()).date(), 1);
         // Refuse long spans before listing their months.
@@ -715,10 +831,8 @@ impl Shared {
             return;
         }
         let mut want = self.want.lock().expect("want lock");
-        if want.1 != months {
-            want.1 = months.clone();
-            want.0.send(Command::Want(ViewId::Shell, months));
-        }
+        want.by_conn.insert(conn, months);
+        want.tell();
     }
 }
 
@@ -752,8 +866,7 @@ fn write_line(writer: &Mutex<UnixStream>, v: &Value) -> io::Result<()> {
     writer.lock().expect("writer lock").write_all(&line)
 }
 
-fn serve(shared: &Shared, stream: UnixStream) -> io::Result<()> {
-    let conn = shared.next_conn.fetch_add(1, Ordering::Relaxed);
+fn serve(shared: &Shared, conn: u64, stream: UnixStream) -> io::Result<()> {
     stream.set_write_timeout(Some(IO_TIMEOUT))?;
     let writer = Arc::new(Mutex::new(stream.try_clone()?));
     let mut reader = BufReader::new(stream);
@@ -810,7 +923,7 @@ fn respond(shared: &Shared, conn: u64, writer: &Arc<Mutex<UnixStream>>, req: &Va
             let snap = shared.snapshot.lock().expect("snapshot lock");
             Ok(serde_json::to_value(&snap.calendars).unwrap_or_default())
         }
-        "events.list" => Ok(events_list(shared, params)),
+        "events.list" => Ok(events_list(shared, conn, params)),
         "tasks.list" => Ok(json!({ "tasks": [] })),
         "antarctical.hello" => Ok(json!({
             "app": "antarctical",
@@ -818,7 +931,16 @@ fn respond(shared: &Shared, conn: u64, writer: &Arc<Mutex<UnixStream>>, req: &Va
             "pid": std::process::id(),
         })),
         "antarctical.show" => {
-            let _ = shared.actions.send_blocking(ShellAction::Show);
+            let action = params["date"]
+                .as_str()
+                .and_then(|date| date.parse::<Date>().ok())
+                .map_or(ShellAction::Show, ShellAction::ShowAt);
+            let _ = shared.actions.send_blocking(action);
+            Ok(json!(true))
+        }
+        "antarctical.refresh" => {
+            let want = shared.want.lock().expect("want lock");
+            want.sync.send(Command::Refresh);
             Ok(json!(true))
         }
         m if WRITE_METHODS.contains(&m) => Err("read-only".to_string()),
@@ -833,7 +955,7 @@ fn respond(shared: &Shared, conn: u64, writer: &Arc<Mutex<UnixStream>>, req: &Va
 
 /// Answers at once with what is loaded in `[from, to)`; months that are not loaded are
 /// requested from the sync worker and announced with an `events` push when they arrive.
-fn events_list(shared: &Shared, params: &Value) -> Value {
+fn events_list(shared: &Shared, conn: u64, params: &Value) -> Value {
     let parse = |key: &str| {
         params[key]
             .as_str()
@@ -842,7 +964,7 @@ fn events_list(shared: &Shared, params: &Value) -> Value {
     let (from, to) = (parse("from"), parse("to"));
     let limit = params["limit"].as_u64().map_or(usize::MAX, |l| l as usize);
     if let (Some(from), Some(to)) = (from, to) {
-        shared.want_range(from, to);
+        shared.want_range(conn, from, to);
     }
     let snap = shared.snapshot.lock().expect("snapshot lock");
     let events: Vec<&WireEvent> = snap
@@ -1211,6 +1333,52 @@ mod tests {
         );
         request(&mut c, "antarctical.show", Value::Null);
         assert_eq!(h.actions.try_recv().unwrap(), ShellAction::Show);
+        request(&mut c, "antarctical.show", json!({"date": "2026-10-21"}));
+        assert_eq!(
+            h.actions.try_recv().unwrap(),
+            ShellAction::ShowAt(date(2026, 10, 21))
+        );
+        // A date that does not parse still shows the window.
+        request(&mut c, "antarctical.show", json!({"date": "tomorrow"}));
+        assert_eq!(h.actions.try_recv().unwrap(), ShellAction::Show);
+
+        while h.sync_rx.try_recv().is_ok() {}
+        request(&mut c, "antarctical.refresh", Value::Null);
+        assert!(matches!(
+            h.sync_rx.recv_timeout(IO_TIMEOUT).unwrap(),
+            Command::Refresh
+        ));
+    }
+
+    #[test]
+    fn client_requests_return_results_and_surface_errors() {
+        let h = harness("client");
+        h.server.publish(sample_snapshot());
+        let mut c = Client::connect(&h.path).unwrap();
+        let hello = c.request("antarctical.hello", Value::Null).unwrap();
+        assert_eq!(hello["app"], "antarctical");
+        let events = c.request("events.list", json!({})).unwrap();
+        assert_eq!(events["events"].as_array().unwrap().len(), 2);
+        let error = c.request("events.create", json!({})).unwrap_err();
+        assert_eq!(error.to_string(), "read-only");
+    }
+
+    #[test]
+    fn next_push_times_out_quietly_and_then_delivers() {
+        let h = harness("next-push");
+        let mut sub = Client::connect(&h.path).unwrap();
+        sub.request("subscribe", json!({"topics": ["events"]}))
+            .unwrap();
+        assert!(
+            sub.next_push(Duration::from_millis(50)).unwrap().is_none(),
+            "nothing was pushed"
+        );
+        let topics = h.server.publish(sample_snapshot());
+        h.server.push(&topics);
+        assert_eq!(
+            sub.next_push(IO_TIMEOUT).unwrap(),
+            Some(json!({"event": "events"}))
+        );
     }
 
     #[test]
@@ -1249,6 +1417,41 @@ mod tests {
             Command::Forget(ViewId::Shell) => {}
             _ => panic!("expected Forget(Shell)"),
         }
+    }
+
+    #[test]
+    fn clients_reading_different_ranges_are_both_kept_fresh() {
+        let h = harness("union");
+        let want = |h: &Harness| match h.sync_rx.recv_timeout(IO_TIMEOUT).unwrap() {
+            Command::Want(ViewId::Shell, months) => months,
+            _ => panic!("expected Want(Shell)"),
+        };
+        let mut week = Client::connect(&h.path).unwrap();
+        let mut export = Client::connect(&h.path).unwrap();
+        request(
+            &mut week,
+            "events.list",
+            json!({"from": "2026-10-20T00:00:00Z", "to": "2026-10-27T00:00:00Z"}),
+        );
+        assert_eq!(want(&h), vec![date(2026, 10, 1)]);
+        request(
+            &mut export,
+            "events.list",
+            json!({"from": "2026-10-01T00:00:00Z", "to": "2026-12-01T00:00:00Z"}),
+        );
+        assert_eq!(
+            want(&h),
+            vec![date(2026, 10, 1), date(2026, 11, 1), date(2026, 12, 1)]
+        );
+        // Asking again changes nothing, and the export leaving narrows it back.
+        request(
+            &mut week,
+            "events.list",
+            json!({"from": "2026-10-20T00:00:00Z", "to": "2026-10-27T00:00:00Z"}),
+        );
+        assert!(h.sync_rx.try_recv().is_err());
+        drop(export);
+        assert_eq!(want(&h), vec![date(2026, 10, 1)]);
     }
 
     #[test]

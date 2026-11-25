@@ -1,0 +1,60 @@
+{
+  "settings": {
+    "days": {
+      "label": "Days in the agenda",
+      "description": "How many days launcher search covers, starting today."
+    },
+    "join_lead_minutes": {
+      "label": "Offer Join this early",
+      "description": "Minutes before a video call starts that the bar shows its Join button."
+    },
+    "command": {
+      "label": "Antarctical command",
+      "description": "The antarctical executable: a name on PATH or an absolute path."
+    },
+    "show_title": {
+      "label": "Show the event title",
+      "description": "Show the title beside the countdown. Off leaves only the countdown."
+    },
+    "title_width": {
+      "label": "Title width",
+      "description": "Longest title shown in the bar, in pixels, before it is cut short."
+    },
+    "hide_when_idle": {
+      "label": "Hide when nothing is left today",
+      "description": "Take no bar space once today's last event has ended."
+    }
+  },
+  "when": {
+    "now": "now",
+    "minutes": "in {m}m",
+    "hours": "in {h}h",
+    "hours_minutes": "in {h}h {m}m",
+    "all_day": "All day"
+  },
+  "day": {
+    "today": "Today"
+  },
+  "status": {
+    "starting": "Waiting for Antarctical…",
+    "offline": "Antarctical is not running",
+    "missing": "The antarctical command was not found",
+    "idle": "Nothing else today",
+    "none": "No upcoming events"
+  },
+  "action": {
+    "join": "Join the call"
+  },
+  "tooltip": {
+    "tomorrow": "Tomorrow"
+  },
+  "search": {
+    "none": "No upcoming event matches",
+    "join": "Enter joins the call",
+    "open": "Enter opens that day in Antarctical"
+  },
+  "notify": {
+    "failed": "Antarctical did not respond",
+    "open_failed": "Could not open the link"
+  }
+}
