@@ -255,6 +255,7 @@ mod tests {
             attendees: vec![],
             reminders: vec![],
             tentative: false,
+            kind: Default::default(),
         };
         assert_eq!(
             event_time_on(&e, date(2026, 10, 21), &tz, true),
@@ -286,6 +287,7 @@ mod tests {
             attendees: vec![],
             reminders: vec![],
             tentative: false,
+            kind: Default::default(),
         };
         let some = |a: &str, b: Option<&str>| Some((a.to_string(), b.map(String::from)));
         let d21 = date(2026, 10, 21);
@@ -350,6 +352,7 @@ mod tests {
             attendees: vec![],
             reminders: vec![],
             tentative: false,
+            kind: Default::default(),
         };
         let d21 = date(2026, 10, 21);
         let d22 = date(2026, 10, 22);

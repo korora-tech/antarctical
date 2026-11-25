@@ -32,6 +32,8 @@ pub struct Prefs {
     pub view: ViewMode,
     /// Show events you declined (greyed and struck through). Off: they are hidden everywhere.
     pub show_declined: bool,
+    /// Show Google's working-location entries ("Home", "Office") as all-day events.
+    pub show_working_locations: bool,
     /// Extra time zones (IANA names) shown beside the hour gutter of the week and day views.
     pub secondary_zones: Vec<String>,
     /// Demo mode: never written to disk.
@@ -50,6 +52,7 @@ impl Default for Prefs {
             clock_24h: true,
             view: ViewMode::Month,
             show_declined: false,
+            show_working_locations: false,
             secondary_zones: vec![],
             ephemeral: false,
         }

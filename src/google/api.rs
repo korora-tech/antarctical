@@ -8,7 +8,7 @@ use jiff::Timestamp;
 use serde::Deserialize;
 
 use crate::model::{
-    Attendee, Calendar, Event, Response, When, google_event_color, parse_hex_color,
+    Attendee, Calendar, Event, EventKind, Response, When, google_event_color, parse_hex_color,
 };
 
 const BASE: &str = "https://www.googleapis.com/calendar/v3";
@@ -20,7 +20,8 @@ const CALENDAR_FIELDS: &str = concat!(
 );
 const EVENT_FIELDS: &str = "items(id,status,summary,description,location,htmlLink,hangoutLink,\
     start,end,colorId,eventType,attendees(email,displayName,responseStatus,organizer,self),\
-    organizer(email,displayName,self),reminders,conferenceData(entryPoints(entryPointType,uri))),\
+    organizer(email,displayName,self),reminders,conferenceData(entryPoints(entryPointType,uri)),\
+    workingLocationProperties(type,officeLocation(label),customLocation(label))),\
     nextPageToken";
 const ATTENDEE_FIELDS: &str = "etag,attendeesOmitted,attendees(email,displayName,responseStatus,organizer,self,comment,additionalGuests,optional,resource)";
 
@@ -456,7 +457,8 @@ pub enum RemindersEdit {
 
 const EVENT_FIELDS_ONE: &str = "id,status,summary,description,location,htmlLink,hangoutLink,\
     start,end,colorId,eventType,attendees(email,displayName,responseStatus,organizer,self),\
-    organizer(email,displayName,self),reminders,conferenceData(entryPoints(entryPointType,uri))";
+    organizer(email,displayName,self),reminders,conferenceData(entryPoints(entryPointType,uri)),\
+    workingLocationProperties(type,officeLocation(label),customLocation(label))";
 
 fn wire_when(when: &When, tz: Option<&str>) -> (serde_json::Value, serde_json::Value) {
     use serde_json::json;
@@ -1096,11 +1098,44 @@ struct WireEvent {
     end: Option<WireTime>,
     color_id: Option<String>,
     event_type: Option<String>,
+    working_location_properties: Option<WireWorkingLocation>,
     #[serde(default)]
     attendees: Vec<WireAttendee>,
     organizer: Option<WirePerson>,
     reminders: Option<WireReminders>,
     conference_data: Option<WireConference>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WireWorkingLocation {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    office_location: Option<WireLabel>,
+    custom_location: Option<WireLabel>,
+}
+
+#[derive(Deserialize)]
+struct WireLabel {
+    label: Option<String>,
+}
+
+impl WireWorkingLocation {
+    /// A name for the place when Google gave the entry no title: "Home", the office label, or
+    /// the custom label.
+    fn name(&self) -> Option<String> {
+        let label = |l: &Option<WireLabel>| {
+            l.as_ref()
+                .and_then(|l| l.label.clone())
+                .filter(|l| !l.trim().is_empty())
+        };
+        match self.kind.as_deref() {
+            Some("homeOffice") => Some("Home".into()),
+            Some("officeLocation") => label(&self.office_location).or(Some("Office".into())),
+            Some("customLocation") => label(&self.custom_location),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -1187,10 +1222,7 @@ impl WireEvent {
         if self.status.as_deref() == Some("cancelled") {
             return None;
         }
-        // Working-location markers are all-day noise in a viewer.
-        if self.event_type.as_deref() == Some("workingLocation") {
-            return None;
-        }
+        let kind = EventKind::from_google(self.event_type.as_deref());
         let when = parse_when(self.start.as_ref()?, self.end.as_ref())?;
         let reminders = match &self.reminders {
             // Google applies calendar defaults to timed events only.
@@ -1217,6 +1249,11 @@ impl WireEvent {
             title: self
                 .summary
                 .filter(|s| !s.trim().is_empty())
+                .or_else(|| {
+                    self.working_location_properties
+                        .as_ref()
+                        .and_then(WireWorkingLocation::name)
+                })
                 .unwrap_or_else(|| "(No title)".into()),
             when,
             color: self.color_id.as_deref().and_then(google_event_color),
@@ -1231,6 +1268,7 @@ impl WireEvent {
             attendees,
             reminders,
             tentative: self.status.as_deref() == Some("tentative"),
+            kind,
         })
     }
 }
@@ -1603,18 +1641,49 @@ mod tests {
              "reminders":{"useDefault":false,"overrides":[{"method":"email","minutes":60},{"method":"popup","minutes":30},{"method":"popup","minutes":5}]}}
             ]}"#,
         );
-        assert_eq!(evs.len(), 2);
+        // The cancelled entry is skipped; the working location is kept, flagged as such.
+        assert_eq!(evs.len(), 3);
+        assert_eq!(evs[0].kind, EventKind::WorkingLocation);
         assert_eq!(
-            evs[0].when,
+            evs[1].when,
             When::AllDay {
                 start: date(2026, 10, 21),
                 end: date(2026, 10, 24)
             }
         );
-        assert!(evs[0].reminders.is_empty());
-        assert_eq!(evs[1].title, "(No title)");
-        assert_eq!(evs[1].reminders, vec![5, 30]);
-        assert!(evs[1].self_response().is_none());
+        assert!(evs[1].reminders.is_empty());
+        assert_eq!(evs[2].title, "(No title)");
+        assert_eq!(evs[2].reminders, vec![5, 30]);
+        assert!(evs[2].self_response().is_none());
+    }
+
+    #[test]
+    fn google_event_types_are_recognised_and_working_locations_named() {
+        let evs = parse(
+            r#"{"items":[
+            {"id":"o","eventType":"outOfOffice","summary":"Out of office","start":{"dateTime":"2026-10-21T10:00:00Z"},"end":{"dateTime":"2026-10-21T11:00:00Z"}},
+            {"id":"f","eventType":"focusTime","summary":"Focus time","start":{"dateTime":"2026-10-21T12:00:00Z"},"end":{"dateTime":"2026-10-21T13:00:00Z"}},
+            {"id":"h","eventType":"workingLocation","workingLocationProperties":{"type":"homeOffice"},"start":{"date":"2026-10-21"},"end":{"date":"2026-10-22"}},
+            {"id":"w","eventType":"workingLocation","workingLocationProperties":{"type":"officeLocation","officeLocation":{"label":"King's Cross"}},"start":{"date":"2026-10-22"},"end":{"date":"2026-10-23"}},
+            {"id":"d","eventType":"default","summary":"Lunch","start":{"dateTime":"2026-10-21T12:00:00Z"},"end":{"dateTime":"2026-10-21T13:00:00Z"}}
+            ]}"#,
+        );
+        let kinds: Vec<EventKind> = evs.iter().map(|e| e.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                EventKind::OutOfOffice,
+                EventKind::FocusTime,
+                EventKind::WorkingLocation,
+                EventKind::WorkingLocation,
+                EventKind::Regular
+            ]
+        );
+        assert_eq!(evs[2].title, "Home");
+        assert_eq!(evs[3].title, "King's Cross");
+        assert!(!evs[0].is_regular() && evs[4].is_regular());
+        assert_eq!(EventKind::FocusTime.label(), Some("Focus time"));
+        assert_eq!(EventKind::Regular.label(), None);
     }
 
     #[test]

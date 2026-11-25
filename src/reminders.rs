@@ -201,6 +201,7 @@ mod tests {
             attendees: vec![],
             reminders,
             tentative: false,
+            kind: Default::default(),
         }
     }
 

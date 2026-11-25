@@ -18,6 +18,7 @@ A native Google Calendar viewer for Linux, built with Rust and [GPUI](https://ww
 - **Multiple Google accounts:** bring calendars together and hide or show each one from the sidebar.
 - **Four views:** month, week, day and agenda, with keyboard shortcuts and a mini calendar for navigation.
 - **A fixed penguin tray icon:** open a compact calendar and agenda. The icon never shows a date badge.
+- **Google event types:** out of office and focus time entries are labelled in the detail pane and are left to Google's own editor (no Edit, drag or delete here). Working locations (Home, Office) are off by default; Settings → Preferences shows them as all-day events.
 - **Calendar sets:** Settings → Preferences → Calendar sets saves the calendars shown in the sidebar under a name (`Work`, `Home`). The names appear as chips above the calendar list; click one to show exactly those calendars.
 - **Extra time zones:** Settings → Preferences → Extra time zones (up to two IANA names such as `Asia/Tokyo`) adds columns of local hours beside the week and day views.
 - **Desktop reminders:** use Google Calendar's popup reminders. Hidden calendars and declined events never notify. Notifications have **Join** (when the event has a video call) and **Snooze 5 min** buttons, if your notification server shows actions (GNOME and KDE do).

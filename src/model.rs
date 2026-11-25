@@ -137,9 +137,50 @@ pub struct Event {
     pub reminders: Vec<i64>,
     /// Whether Google marks the event itself as tentative.
     pub tentative: bool,
+    /// What kind of entry this is (a normal event, out of office, focus time, working location).
+    #[serde(default)]
+    pub kind: EventKind,
+}
+
+/// Google's `eventType`, for the kinds the app treats differently.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EventKind {
+    #[default]
+    Regular,
+    OutOfOffice,
+    FocusTime,
+    WorkingLocation,
+}
+
+impl EventKind {
+    pub fn from_google(event_type: Option<&str>) -> Self {
+        match event_type {
+            Some("outOfOffice") => Self::OutOfOffice,
+            Some("focusTime") => Self::FocusTime,
+            Some("workingLocation") => Self::WorkingLocation,
+            _ => Self::Regular,
+        }
+    }
+
+    /// What to call it where the kind is shown; `None` for a normal event.
+    pub fn label(self) -> Option<&'static str> {
+        match self {
+            Self::Regular => None,
+            Self::OutOfOffice => Some("Out of office"),
+            Self::FocusTime => Some("Focus time"),
+            Self::WorkingLocation => Some("Working location"),
+        }
+    }
 }
 
 impl Event {
+    /// Whether the app may edit, move or delete this: out of office, focus time and working
+    /// location entries carry settings (auto-decline, chat status) that only Google's own
+    /// editor handles.
+    pub fn is_regular(&self) -> bool {
+        self.kind == EventKind::Regular
+    }
+
     /// Whether this is one occurrence of a repeating series. Google names those
     /// `<series id>_<date>` (or `_<date>T<time>Z`); plain ids never contain an underscore.
     pub fn is_recurring_instance(&self) -> bool {
@@ -332,6 +373,7 @@ mod tests {
             attendees: vec![],
             reminders: vec![],
             tentative: false,
+            kind: Default::default(),
         }
     }
 

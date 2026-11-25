@@ -75,6 +75,7 @@ fn event_from_draft(calendar: &Calendar, id: String, draft: &EventDraft) -> Even
         attendees: vec![],
         reminders: vec![10],
         tentative: false,
+        kind: Default::default(),
     }
 }
 
@@ -363,6 +364,7 @@ fn events_for(cal: &Calendar, month: Date, today: Date, tz: &TimeZone) -> Vec<Ev
         attendees: vec![],
         reminders: cal.default_reminders.clone(),
         tentative: false,
+        kind: Default::default(),
     };
     let timed = |d: Date, (h1, m1): (i8, i8), (h2, m2): (i8, i8)| When::Timed {
         start: at(d, h1, m1, tz),
@@ -375,6 +377,27 @@ fn events_for(cal: &Calendar, month: Date, today: Date, tz: &TimeZone) -> Vec<Ev
         let weekday = !matches!(wd, Weekday::Saturday | Weekday::Sunday);
         match cal.remote_id.as_str() {
             WORK => {
+                if matches!(wd, Weekday::Monday | Weekday::Wednesday) {
+                    let mut e = base(
+                        format!("home-{key}"),
+                        "Home",
+                        When::AllDay {
+                            start: d,
+                            end: model::add_days(d, 1),
+                        },
+                    );
+                    e.kind = model::EventKind::WorkingLocation;
+                    out.push(e);
+                }
+                if wd == Weekday::Thursday {
+                    let mut e = base(
+                        format!("focus-{key}"),
+                        "Focus time",
+                        timed(d, (13, 0), (15, 0)),
+                    );
+                    e.kind = model::EventKind::FocusTime;
+                    out.push(e);
+                }
                 if wd == Weekday::Tuesday {
                     let mut e = base(
                         format!("1on1-{key}"),

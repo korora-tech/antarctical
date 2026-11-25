@@ -11,7 +11,7 @@ use jiff::tz::TimeZone;
 use crate::config::Prefs;
 use crate::google::api::{EventDraft, RemindersEdit, series_id};
 use crate::model;
-use crate::model::{Attendee, Calendar, Event, Response, When};
+use crate::model::{Attendee, Calendar, Event, EventKind, Response, When};
 use crate::sync::{AuthState, Command, SyncEvent, SyncHandle, WriteFailure};
 
 /// The account data source represented by a [`Store`].
@@ -425,6 +425,7 @@ impl Store {
                 When::AllDay { .. } => vec![],
             },
             tentative: false,
+            kind: Default::default(),
         }
     }
 
@@ -486,6 +487,9 @@ impl Store {
         let Some(previous) = self.find_event(&calendar.id, event_id).cloned() else {
             return false;
         };
+        if !previous.is_regular() {
+            return false;
+        }
         let event = edited_copy(&previous, &draft, calendar);
         let ticket = self.ticket();
         self.insert_event(event.clone());
@@ -648,7 +652,8 @@ impl Store {
         let Some(previous) = self.find_event(&from.id, event_id).cloned() else {
             return false;
         };
-        if previous.is_recurring_instance() || !previous.user_organizes() {
+        if !previous.is_regular() || previous.is_recurring_instance() || !previous.user_organizes()
+        {
             return false;
         }
         let mut event = match &draft {
@@ -682,6 +687,12 @@ impl Store {
     /// Deletes an event from the UI at once. Returns false when it is unknown or busy.
     pub fn delete_event(&mut self, calendar: &Calendar, event_id: &str) -> bool {
         if self.is_pending_event(event_id) || self.write_in_flight(&calendar.id, event_id) {
+            return false;
+        }
+        if self
+            .find_event(&calendar.id, event_id)
+            .is_some_and(|e| !e.is_regular())
+        {
             return false;
         }
         let Some(event) = self.remove_event(&calendar.id, event_id) else {
@@ -1143,6 +1154,9 @@ impl Store {
                     if e.declined() && !self.prefs.show_declined {
                         continue;
                     }
+                    if e.kind == EventKind::WorkingLocation && !self.prefs.show_working_locations {
+                        continue;
+                    }
                     if !seen.insert((cal.remote_id.as_str(), e.id.as_str())) {
                         continue;
                     }
@@ -1304,6 +1318,7 @@ mod tests {
             attendees: vec![],
             reminders: vec![],
             tentative: false,
+            kind: Default::default(),
         }
     }
 
@@ -1338,6 +1353,40 @@ mod tests {
         assert_eq!(s.active_calendar_set(), None);
         s.apply_calendar_set("Home"); // gone: nothing changes
         assert!(s.is_visible(s.calendar("a").unwrap()));
+    }
+
+    #[test]
+    fn working_locations_are_hidden_unless_asked_for_and_special_entries_are_not_editable() {
+        let (mut s, _rx, cal) = with_one_event();
+        let mut home = all_day("a", "home", date(2026, 10, 5), date(2026, 10, 6));
+        home.kind = EventKind::WorkingLocation;
+        let mut ooo = all_day("a", "ooo", date(2026, 10, 7), date(2026, 10, 8));
+        ooo.kind = EventKind::OutOfOffice;
+        s.apply(SyncEvent::Month {
+            calendar_id: "a".into(),
+            month: date(2026, 10, 1),
+            events: vec![
+                all_day("a", "old", date(2026, 10, 5), date(2026, 10, 6)),
+                home,
+                ooo,
+            ],
+        });
+        let titles = |s: &Store| -> Vec<String> {
+            s.events_between(date(2026, 10, 1), date(2026, 11, 1), &TimeZone::UTC)
+                .iter()
+                .map(|e| e.id.clone())
+                .collect()
+        };
+        assert_eq!(titles(&s), vec!["old", "ooo"]);
+        s.prefs.show_working_locations = true;
+        assert_eq!(titles(&s), vec!["home", "old", "ooo"]);
+
+        // Google's own editor handles these; ours leaves them alone.
+        assert!(!s.update_event(&cal, "ooo", draft("Renamed")));
+        assert!(!s.delete_event(&cal, "ooo"));
+        assert!(!s.delete_event(&cal, "home"));
+        assert!(s.find_event("a", "ooo").is_some());
+        assert!(s.delete_event(&cal, "old"));
     }
 
     #[test]
