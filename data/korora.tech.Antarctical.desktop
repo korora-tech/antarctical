@@ -2,7 +2,8 @@
 Type=Application
 Name=Antarctical
 Comment=Google Calendar for your desktop
-Exec=antarctical
+Exec=antarctical %F
+MimeType=text/calendar;application/ics;
 Icon=korora.tech.Antarctical
 Terminal=false
 Categories=Office;Calendar;

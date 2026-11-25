@@ -3,6 +3,7 @@
 pub mod calendar_views;
 pub mod compose;
 pub mod format;
+pub mod import;
 pub mod main_view;
 pub mod palette;
 pub mod settings;

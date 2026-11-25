@@ -15,6 +15,7 @@ All notable changes to Antarctical are recorded here. The format follows [Keep a
 
 ### Added
 
+- **Import `.ics` files:** `antarctical FILE.ics`, or opening a calendar file with Antarctical (the desktop entry now handles `text/calendar`), lists the file's events and the calendar they will go to, then creates them in Google on one click. Guests are never invited and alarms are ignored; cancelled events and single-occurrence changes are skipped. Limits: 200 events and 1 MB per file.
 - **Event time zones:** an event that Google says was set in another time zone than yours now shows what its clock read there under the time in the detail pane (`18:00 – 19:00 Asia/Tokyo`). Nothing is added when that zone reads the same as yours at the event's start, and all-day events never get one. Events are still laid out in your own zone, and the editor still writes in it.
 - **Drag in the month view:** drag an event chip onto another day to move it there, keeping its time (all-day events keep their length). The same events as in the week view can be dragged: ones you organise, on accounts with editing on. The day under the pointer highlights.
 - **Command palette:** `Ctrl+K` (or the Commands button) opens a box that finds commands as you type: switch view, go to today, new event, refresh, settings, show a saved calendar set, or show or hide any calendar. A date typed in (`friday`, `go to dec 25`) is offered as a jump. Up and Down choose, Enter runs, Esc closes.

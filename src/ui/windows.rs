@@ -78,3 +78,37 @@ pub fn show_main_window_at(store: &Entity<Store>, date: Date, cx: &mut App) {
         Err(e) => eprintln!("antarctical: could not open a window: {e}"),
     }
 }
+
+/// Reads an `.ics` file and offers to import its events in the main window.
+pub fn import_ics(store: &Entity<Store>, path: &std::path::Path, cx: &mut App) {
+    use std::io::Read;
+    let name = path.file_name().map_or_else(
+        || "calendar file".to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let read = std::fs::File::open(path).and_then(|file| {
+        let mut text = String::new();
+        file.take(crate::ics::MAX_BYTES + 1)
+            .read_to_string(&mut text)?;
+        Ok(text)
+    });
+    let outcome = match read {
+        Ok(text) if text.len() as u64 > crate::ics::MAX_BYTES => Err(format!(
+            "{name} is larger than 1 MB, which is too big to import."
+        )),
+        Ok(text) => Ok(crate::ics::parse(
+            &text,
+            &jiff::tz::TimeZone::system(),
+            &crate::zones::lookup,
+        )),
+        Err(e) => Err(format!("Could not read {name}: {e}")),
+    };
+    show_main_window(store, cx);
+    if let Some(window) = main_window(cx)
+        && let Err(error) = window.update(cx, |view, window, cx| {
+            view.open_import(name, outcome, window, cx)
+        })
+    {
+        eprintln!("antarctical: could not show the import: {error}");
+    }
+}

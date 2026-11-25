@@ -8,6 +8,7 @@ mod dankcal;
 mod demo;
 mod drag;
 mod google;
+mod ics;
 mod layout;
 mod model;
 mod palette;
@@ -37,7 +38,9 @@ use store::{Mode, Store};
 use sync::Command;
 use tray::{Tray, TrayAction, TrayContent};
 
-const USAGE: &str = "usage: antarctical [--demo] [--hidden]
+const USAGE: &str = "usage: antarctical [--demo] [--hidden] [FILE.ics ...]
+
+  FILE.ics   offer to import the events of an iCalendar file into Google Calendar
 
   --demo     run with generated calendars (no Google account, nothing stored)
   --hidden   start in the tray without opening the window
@@ -57,6 +60,7 @@ fn main() {
     }
     let mut demo = std::env::var_os("ANTARCTICAL_DEMO").is_some_and(|v| v == "1");
     let mut hidden = false;
+    let mut import_files: Vec<std::path::PathBuf> = Vec::new();
     for arg in &args {
         match arg.as_str() {
             "--demo" => demo = true,
@@ -69,6 +73,7 @@ fn main() {
                 println!("antarctical {}", env!("CARGO_PKG_VERSION"));
                 return;
             }
+            file if !file.starts_with('-') => import_files.push(file.into()),
             other => {
                 eprintln!(
                     "antarctical: unknown argument {other}\n{USAGE}\n\n{}",
@@ -77,6 +82,11 @@ fn main() {
                 std::process::exit(2);
             }
         }
+    }
+
+    // Files go to the running instance when there is one.
+    if !demo && !import_files.is_empty() && cli::send_imports(&import_files) {
+        return;
     }
 
     // Before anything else (the keyring, a sign-in): either another Antarctical takes over,
@@ -120,10 +130,15 @@ fn main() {
         Rc::new(ShellPush::new(dankcal::Server::start(
             l,
             sync.clone(),
-            shell_tx,
+            shell_tx.clone(),
             TimeZone::system(),
         )))
     });
+
+    // Files named on the command line of the first launch are offered once the window is up.
+    for file in import_files {
+        let _ = shell_tx.send_blocking(ShellAction::Import(file));
+    }
 
     // Explicit: closing the last window must not quit while the tray keeps the app alive;
     // `on_window_closed` below quits when there is no tray.
@@ -195,6 +210,7 @@ fn main() {
                     while let Ok(action) = shell_rx.recv().await {
                         cx.update(|cx| match action {
                             ShellAction::Show => ui::windows::show_main_window(&store, cx),
+                            ShellAction::Import(path) => ui::windows::import_ics(&store, &path, cx),
                             ShellAction::ShowAt(date) => {
                                 ui::windows::show_main_window_at(&store, date, cx)
                             }

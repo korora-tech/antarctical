@@ -195,6 +195,25 @@ fn once(exchange: impl FnOnce(&mut Client) -> io::Result<()>) -> u8 {
     }
 }
 
+/// Asks the running Antarctical to offer importing each file. `false` when none is running (the
+/// caller then starts the app and imports itself).
+pub fn send_imports(paths: &[PathBuf]) -> bool {
+    let Some(mut client) = connect() else {
+        return false;
+    };
+    for path in paths {
+        let absolute = std::path::absolute(path).unwrap_or_else(|_| path.clone());
+        if let Err(error) = client
+            .request("antarctical.import", json!({ "path": absolute }))
+            .map(drop)
+        {
+            eprintln!("antarctical: the running instance did not answer: {error}");
+            return false;
+        }
+    }
+    true
+}
+
 fn connect() -> Option<Client> {
     Client::connect(&dankcal::running_socket()?).ok()
 }
