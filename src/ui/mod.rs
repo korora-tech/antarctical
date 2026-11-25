@@ -1,6 +1,7 @@
 //! GPUI front end: full calendar and tray agenda windows over the shared [`crate::store::Store`].
 
 pub mod calendar_views;
+pub mod compose;
 pub mod format;
 pub mod main_view;
 pub mod settings;
@@ -27,6 +28,8 @@ actions!(
         Refresh,
         CloseWindow,
         Quit,
+        NewEvent,
+        EditEvent,
     ]
 );
 
@@ -43,6 +46,9 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("w", ShowWeek, cal),
         KeyBinding::new("d", ShowDay, cal),
         KeyBinding::new("a", ShowAgenda, cal),
+        KeyBinding::new("n", NewEvent, cal),
+        KeyBinding::new("e", EditEvent, cal),
+        KeyBinding::new("ctrl-n", NewEvent, None),
         KeyBinding::new("escape", Back, None),
         KeyBinding::new("ctrl-,", OpenSettings, None),
         KeyBinding::new("ctrl-r", Refresh, None),
