@@ -56,6 +56,9 @@ pub struct SettingsView {
     /// Extra time zones for the week and day views, as typed.
     zones: Entity<TextInput>,
     zones_error: Option<String>,
+    /// Name for the next saved calendar set.
+    set_name: Entity<TextInput>,
+    set_error: Option<String>,
     /// The stored client id last copied into the field, so edits are not overwritten.
     shown_client: Option<Option<String>>,
     focus: FocusHandle,
@@ -71,6 +74,7 @@ impl SettingsView {
             cx.new(|cx| TextInput::new("1234567890-abc.apps.googleusercontent.com", false, 1, cx));
         let client_secret = cx.new(|cx| TextInput::new("GOCSPX-…", true, 2, cx));
         let zones = cx.new(|cx| TextInput::new("America/New_York, Asia/Tokyo", false, 3, cx));
+        let set_name = cx.new(|cx| TextInput::new("Work", false, 4, cx));
         let saved_zones = store.read(cx).prefs.secondary_zones.join(", ");
         zones.update(cx, |i, cx| i.set_text(saved_zones, cx));
         let subscription = cx.observe(&store, |this, _, cx| {
@@ -83,6 +87,8 @@ impl SettingsView {
             client_secret,
             zones,
             zones_error: None,
+            set_name,
+            set_error: None,
             shown_client: None,
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
@@ -148,6 +154,24 @@ impl SettingsView {
                 });
             }
             Err(e) => self.zones_error = Some(e),
+        }
+        cx.notify();
+    }
+
+    /// Saves the calendars shown in the sidebar as a named set.
+    fn save_set(&mut self, cx: &mut Context<Self>) {
+        let name = self.set_name.read(cx).text().to_string();
+        let result = self.store.update(cx, |s, cx| {
+            let r = s.save_calendar_set(&name);
+            cx.notify();
+            r
+        });
+        match result {
+            Ok(()) => {
+                self.set_error = None;
+                self.set_name.update(cx, |i, cx| i.set_text("", cx));
+            }
+            Err(e) => self.set_error = Some(e),
         }
         cx.notify();
     }
@@ -218,6 +242,8 @@ impl Render for SettingsView {
         let show_declined = store.prefs.show_declined;
         let secret_masked = self.client_secret.read(cx).is_masked();
         let zones_error = self.zones_error.clone();
+        let set_error = self.set_error.clone();
+        let sets: Vec<String> = store.prefs.calendar_sets.keys().cloned().collect();
 
         let client_card =
             card("Google OAuth client")
@@ -540,6 +566,55 @@ impl Render for SettingsView {
                                     .to_string()
                             })),
                     ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.0))
+                    .child(caption("CALENDAR SETS"))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().flex_1().child(self.set_name.clone()))
+                            .child(button(
+                                "save-set",
+                                "Save shown calendars",
+                                ButtonStyle::Secondary,
+                                Some(self.click(cx, |this, _, cx| this.save_set(cx))),
+                            )),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(rgb(if set_error.is_some() { AMBER } else { MUTED }))
+                            .child(set_error.unwrap_or_else(|| {
+                                "Shows the calendars ticked in the sidebar under this name; click it there to switch back. Saving with an existing name replaces it."
+                                    .to_string()
+                            })),
+                    )
+                    .children(sets.into_iter().map(|name| {
+                        let target = name.clone();
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(div().text_size(px(12.5)).child(name.clone()))
+                            .child(button(
+                                SharedString::from(format!("delete-set-{name}")),
+                                "Delete",
+                                ButtonStyle::Danger,
+                                Some(self.click(cx, move |this, _, cx| {
+                                    let target = target.clone();
+                                    this.store.update(cx, |s, cx| {
+                                        s.delete_calendar_set(&target);
+                                        cx.notify();
+                                    });
+                                })),
+                            ))
+                    })),
             );
 
         div()

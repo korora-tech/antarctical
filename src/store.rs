@@ -1033,6 +1033,79 @@ impl Store {
         self.prefs.save();
     }
 
+    /// Longest name a calendar set may have.
+    pub const SET_NAME_MAX: usize = 24;
+
+    fn visible_ids(&self) -> BTreeSet<String> {
+        self.calendars
+            .iter()
+            .filter(|c| self.is_visible(c))
+            .map(|c| c.id.clone())
+            .collect()
+    }
+
+    /// Saves the calendars shown right now as a named set (replacing one of that name).
+    pub fn save_calendar_set(&mut self, name: &str) -> Result<(), String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("Give the set a name".into());
+        }
+        if name.chars().count() > Self::SET_NAME_MAX {
+            return Err(format!(
+                "Keep the name to {} characters",
+                Self::SET_NAME_MAX
+            ));
+        }
+        let ids: Vec<String> = self.visible_ids().into_iter().collect();
+        if ids.is_empty() {
+            return Err("Show at least one calendar first".into());
+        }
+        self.prefs.calendar_sets.insert(name.to_string(), ids);
+        self.prefs.save();
+        Ok(())
+    }
+
+    pub fn delete_calendar_set(&mut self, name: &str) {
+        if self.prefs.calendar_sets.remove(name).is_some() {
+            self.prefs.save();
+        }
+    }
+
+    /// Shows exactly the calendars of the named set and hides the rest.
+    pub fn apply_calendar_set(&mut self, name: &str) {
+        let Some(ids) = self.prefs.calendar_sets.get(name) else {
+            return;
+        };
+        let ids: BTreeSet<&String> = ids.iter().collect();
+        let updates: Vec<(String, bool)> = self
+            .calendars
+            .iter()
+            .map(|c| (c.id.clone(), ids.contains(&c.id)))
+            .collect();
+        for (id, visible) in updates {
+            self.prefs.calendar_visibility.insert(id, visible);
+        }
+        self.prefs.save();
+    }
+
+    /// The set that matches what is shown right now, if any. Calendars that no longer exist are
+    /// ignored, so a set survives removing an account.
+    pub fn active_calendar_set(&self) -> Option<&str> {
+        let shown = self.visible_ids();
+        self.prefs
+            .calendar_sets
+            .iter()
+            .find(|(_, ids)| {
+                let present: BTreeSet<String> = ids
+                    .iter()
+                    .filter(|id| self.calendar(id).is_some())
+                    .cloned()
+                    .collect();
+                !present.is_empty() && present == shown
+            })
+            .map(|(name, _)| name.as_str())
+    }
+
     /// Resolves an event override, then its calendar color, then the UI's default color.
     pub fn color_of(&self, e: &Event) -> u32 {
         e.color
@@ -1236,6 +1309,45 @@ mod tests {
 
     fn this_month() -> Date {
         model::first_of_month(jiff::Zoned::now().date())
+    }
+
+    #[test]
+    fn calendar_sets_switch_what_is_shown_and_are_recognised_again() {
+        let mut s = store();
+        // Both calendars on to begin with.
+        s.prefs.calendar_visibility.insert("a".into(), true);
+        s.prefs.calendar_visibility.insert("b".into(), true);
+        assert_eq!(s.save_calendar_set("  Everything "), Ok(()));
+        s.toggle_calendar("b");
+        assert_eq!(s.save_calendar_set("Home"), Ok(()));
+        assert_eq!(s.active_calendar_set(), Some("Home"));
+
+        s.apply_calendar_set("Everything");
+        assert!(s.is_visible(s.calendar("a").unwrap()));
+        assert!(s.is_visible(s.calendar("b").unwrap()));
+        assert_eq!(s.active_calendar_set(), Some("Everything"));
+
+        // Hand-picking something that matches no set clears the highlight.
+        s.toggle_calendar("a");
+        assert_eq!(s.active_calendar_set(), None);
+
+        s.apply_calendar_set("Home");
+        assert!(s.is_visible(s.calendar("a").unwrap()));
+        assert!(!s.is_visible(s.calendar("b").unwrap()));
+        s.delete_calendar_set("Home");
+        assert_eq!(s.active_calendar_set(), None);
+        s.apply_calendar_set("Home"); // gone: nothing changes
+        assert!(s.is_visible(s.calendar("a").unwrap()));
+    }
+
+    #[test]
+    fn calendar_set_names_and_contents_are_checked() {
+        let mut s = store();
+        assert!(s.save_calendar_set("   ").is_err());
+        assert!(s.save_calendar_set(&"x".repeat(25)).is_err());
+        s.prefs.calendar_visibility.insert("a".into(), false);
+        s.prefs.calendar_visibility.insert("b".into(), false);
+        assert!(s.save_calendar_set("Nothing").is_err());
     }
 
     #[test]
