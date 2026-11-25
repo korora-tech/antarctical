@@ -1019,6 +1019,7 @@ mod tests {
             attendees: vec![],
             reminders: vec![10],
             tentative: false,
+            kind: Default::default(),
         }
     }
 

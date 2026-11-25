@@ -240,6 +240,7 @@ impl Render for SettingsView {
         let clock_24h = store.prefs.clock_24h;
         let offline_cache = store.prefs.offline_cache;
         let show_declined = store.prefs.show_declined;
+        let show_working_locations = store.prefs.show_working_locations;
         let secret_masked = self.client_secret.read(cx).is_masked();
         let zones_error = self.zones_error.clone();
         let set_error = self.set_error.clone();
@@ -533,6 +534,19 @@ impl Render for SettingsView {
                 Some(self.click(cx, |this, _, cx| {
                     this.store.update(cx, |s, cx| {
                         s.prefs.show_declined = !s.prefs.show_declined;
+                        s.prefs.save();
+                        cx.notify();
+                    })
+                })),
+            ))
+            .child(checkbox_row(
+                "pref-working-locations",
+                "Show working locations (Home, Office) as all-day events",
+                ACCENT,
+                show_working_locations,
+                Some(self.click(cx, |this, _, cx| {
+                    this.store.update(cx, |s, cx| {
+                        s.prefs.show_working_locations = !s.prefs.show_working_locations;
                         s.prefs.save();
                         cx.notify();
                     })

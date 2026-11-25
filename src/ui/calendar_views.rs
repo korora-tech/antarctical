@@ -156,9 +156,12 @@ impl MainView {
     /// be edited, that the user organises (or that has no guests).
     fn draggable_block(&self, store: &Store, e: &Event, tz: &TimeZone) -> Option<Block> {
         let calendar = store.calendar(&e.calendar_id)?;
-        (store.can_write(calendar) && !store.is_pending_event(&e.id) && e.user_organizes())
-            .then(|| drag::block_of(e, tz))
-            .flatten()
+        (store.can_write(calendar)
+            && e.is_regular()
+            && !store.is_pending_event(&e.id)
+            && e.user_organizes())
+        .then(|| drag::block_of(e, tz))
+        .flatten()
     }
 
     /// Builds the invisible drag view, and ends the drag when it is let go anywhere (a drop on the

@@ -222,7 +222,7 @@ impl MainView {
             return;
         };
         let calendar = store.calendar(&cal_id).cloned();
-        let editable = calendar.as_ref().is_some_and(|c| store.can_write(c));
+        let editable = event.is_regular() && calendar.as_ref().is_some_and(|c| store.can_write(c));
         let read_only = calendar.as_ref().is_some_and(|c| !c.writable);
         if store.is_pending_event(&ev_id) {
             return;
@@ -1006,6 +1006,15 @@ impl MainView {
             facts = facts.child(icon_row(location_icon(), loc.clone()));
             has_facts = true;
         }
+        if let Some(label) = event.kind.label() {
+            facts = facts.child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgb(MUTED))
+                    .child(label),
+            );
+            has_facts = true;
+        }
         if let Some(org) = &event.organizer {
             facts = facts.child(icon_row(organizer_icon(), format!("Organized by {org}")));
             has_facts = true;
@@ -1041,6 +1050,7 @@ impl MainView {
         }
 
         let can_edit_event = !store.is_pending_event(&event.id)
+            && event.is_regular()
             && store
                 .calendar(&event.calendar_id)
                 .is_some_and(|c| store.can_write(c));
