@@ -265,13 +265,20 @@ pub struct QuickAddView {
     store: Entity<Store>,
     input: Entity<TextInput>,
     anchor: Date,
+    /// A time chosen by dragging in the grid; text that names its own time wins.
+    when: Option<When>,
     _subscription: Subscription,
 }
 
 impl EventEmitter<ComposeEvent> for QuickAddView {}
 
 impl QuickAddView {
-    pub fn new(store: Entity<Store>, anchor: Date, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        store: Entity<Store>,
+        anchor: Date,
+        when: Option<When>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let input =
             cx.new(|cx| TextInput::new("Lunch with Sam tomorrow 1pm at Dishoom", false, 1, cx));
         let subscription = cx.observe(&input, |_, _, cx| cx.notify());
@@ -279,6 +286,7 @@ impl QuickAddView {
             store,
             input,
             anchor,
+            when,
             _subscription: subscription,
         }
     }
@@ -290,12 +298,15 @@ impl QuickAddView {
     fn resolved(&self, cx: &App) -> Option<Resolved> {
         let store = self.store.read(cx);
         let text = self.input.read(cx).text().to_string();
-        if text.trim().is_empty() {
+        if text.trim().is_empty() && self.when.is_none() {
             return None;
         }
         let now = Zoned::now();
+        let mut parsed = quickadd::parse(&text, &now);
+        // A time picked by dragging in the grid, unless the text says otherwise.
+        parsed.when = parsed.when.or(self.when);
         resolve(
-            quickadd::parse(&text, &now),
+            parsed,
             self.anchor,
             &now,
             &store.calendars,
