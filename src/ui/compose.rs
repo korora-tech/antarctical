@@ -28,6 +28,8 @@ pub enum ComposeEvent {
     Close,
     /// The user asked to turn on editing for this account.
     OpenSettings,
+    /// The command palette picked a command for the main view to run.
+    Run(crate::palette::Action),
 }
 
 // ----- pure logic ---------------------------------------------------------------------------
@@ -328,7 +330,7 @@ pub fn text_to_when(text: &str, now: &Zoned) -> Result<When, String> {
 
 // ----- shared view bits ---------------------------------------------------------------------
 
-fn backdrop() -> gpui::Div {
+pub(super) fn backdrop() -> gpui::Div {
     div()
         .absolute()
         .top(px(0.0))
@@ -341,7 +343,7 @@ fn backdrop() -> gpui::Div {
         .bg(gpui::rgba(0x0000_00a0))
 }
 
-fn panel() -> gpui::Div {
+pub(super) fn panel() -> gpui::Div {
     div()
         .w(px(560.0))
         .max_w_full()
@@ -379,7 +381,7 @@ fn fact(label: &'static str, value: String, color: u32) -> gpui::Div {
         )
 }
 
-fn hint(text: &'static str) -> gpui::Div {
+pub(super) fn hint(text: &'static str) -> gpui::Div {
     div()
         .text_size(px(11.0))
         .text_color(rgb(CAPTION))

@@ -10,6 +10,7 @@ mod drag;
 mod google;
 mod layout;
 mod model;
+mod palette;
 mod quickadd;
 mod reminders;
 mod secrets;

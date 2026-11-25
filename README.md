@@ -86,6 +86,7 @@ You can also configure your own Google Desktop OAuth client in Settings. See the
 | `M` / `W` / `D` / `A` | Month / week / day / agenda |
 | `Esc` | Close event details or leave Settings |
 | `Ctrl+,` | Open Settings |
+| `Ctrl+K` | Command palette: type to find a command (views, new event, refresh, settings, a calendar set, show or hide a calendar) or a date to jump to (`friday`, `dec 25`); Up/Down to choose, Enter to run |
 | `Ctrl+R` | Refresh calendars |
 | `Ctrl+W` | Close the window; keep running if the tray is available |
 | `Ctrl+Q` | Quit |

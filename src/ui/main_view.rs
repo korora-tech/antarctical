@@ -13,6 +13,7 @@ use jiff::tz::TimeZone;
 
 use super::compose::{ComposeEvent, EditorView, QuickAddView};
 use super::format;
+use super::palette::PaletteView;
 use super::settings::{SettingsEvent, SettingsView};
 use super::theme::{
     ACCENT, AMBER, BG, BORDER, CAL_ROW_H, CAPTION, CONTROL_H, DECLINED_DOT_TINT, DETAIL_ACTION_H,
@@ -29,8 +30,8 @@ use super::widgets::{
     control_group, ghost_button, link, segment,
 };
 use super::{
-    Back, CloseWindow, EditEvent, NewEvent, Next, OpenSettings, Previous, Quit, Refresh,
-    ShowAgenda, ShowDay, ShowMonth, ShowWeek, Today,
+    Back, CloseWindow, EditEvent, NewEvent, Next, OpenPalette, OpenSettings, Previous, Quit,
+    Refresh, ShowAgenda, ShowDay, ShowMonth, ShowWeek, Today,
 };
 use crate::branding;
 use crate::config::ViewMode;
@@ -66,6 +67,7 @@ pub enum Screen {
 enum Compose {
     QuickAdd(Entity<QuickAddView>),
     Edit(Entity<EditorView>),
+    Palette(Entity<PaletteView>),
 }
 
 pub struct MainView {
@@ -178,6 +180,57 @@ impl MainView {
                 self.close_compose(window, cx);
                 self.show_settings(window, cx);
             }
+            ComposeEvent::Run(action) => {
+                self.close_compose(window, cx);
+                self.run_palette_action(action.clone(), window, cx);
+            }
+        }
+    }
+
+    fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.compose.is_some() || self.screen != Screen::Calendar {
+            return;
+        }
+        let store = self.store.clone();
+        let view = cx.new(|cx| PaletteView::new(store, cx));
+        self._compose_subscription = Some(cx.subscribe_in(
+            &view,
+            window,
+            |this, _, ev: &ComposeEvent, window, cx| this.on_compose_event(ev, window, cx),
+        ));
+        let handle = view.read(cx).first_focus(cx);
+        self.compose = Some(Compose::Palette(view));
+        window.focus(&handle, cx);
+        cx.notify();
+    }
+
+    fn run_palette_action(
+        &mut self,
+        action: crate::palette::Action,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::palette::Action;
+        match action {
+            Action::Today => {
+                self.pending_grid_scroll = true;
+                self.set_anchor(Zoned::now().date(), cx);
+            }
+            Action::Previous => self.step(-1, cx),
+            Action::Next => self.step(1, cx),
+            Action::View(view) => self.set_view(view, cx),
+            Action::NewEvent => self.open_quick_add(window, cx),
+            Action::Refresh => self.store.read(cx).send(Command::Refresh),
+            Action::Settings => self.show_settings(window, cx),
+            Action::GoTo(date) => self.focus_date(date, window, cx),
+            Action::ApplySet(name) => self.store.update(cx, |s, cx| {
+                s.apply_calendar_set(&name);
+                cx.notify();
+            }),
+            Action::ToggleCalendar(id) => self.store.update(cx, |s, cx| {
+                s.toggle_calendar(&id);
+                cx.notify();
+            }),
         }
     }
 
@@ -498,6 +551,19 @@ impl MainView {
                                 ButtonStyle::Primary,
                                 Some(self.listener_click(cx, |this, window, cx| {
                                     this.open_quick_add(window, cx)
+                                })),
+                            )
+                            .h(px(CONTROL_H)),
+                        )
+                    })
+                    .when(in_calendar, |d| {
+                        d.child(
+                            button(
+                                "commands",
+                                "Commands",
+                                ButtonStyle::Toolbar,
+                                Some(self.listener_click(cx, |this, window, cx| {
+                                    this.open_palette(window, cx)
                                 })),
                             )
                             .h(px(CONTROL_H)),
@@ -1439,6 +1505,9 @@ impl Render for MainView {
             )
             .on_action(cx.listener(|this, _: &EditEvent, window, cx| this.open_editor(window, cx)))
             .on_action(
+                cx.listener(|this, _: &OpenPalette, window, cx| this.open_palette(window, cx)),
+            )
+            .on_action(
                 cx.listener(|this, _: &OpenSettings, window, cx| this.show_settings(window, cx)),
             )
             .on_action(
@@ -1493,6 +1562,7 @@ impl Render for MainView {
             .children(match &self.compose {
                 Some(Compose::QuickAdd(view)) => Some(view.clone().into_any_element()),
                 Some(Compose::Edit(view)) => Some(view.clone().into_any_element()),
+                Some(Compose::Palette(view)) => Some(view.clone().into_any_element()),
                 None => None,
             })
     }
