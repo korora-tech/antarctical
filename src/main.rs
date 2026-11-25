@@ -18,6 +18,7 @@ mod sync;
 mod tray;
 mod ui;
 mod vdir;
+mod zones;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;

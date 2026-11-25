@@ -12,7 +12,7 @@ use gpui::{
 
 use super::text_input::{Submit, TextInput};
 use super::theme::{
-    ACCENT, ACCENT_TEXT, BORDER, DISABLED, GREEN, MUTED, PANEL_RAISED, SELECTED, TEXT,
+    ACCENT, ACCENT_TEXT, AMBER, BORDER, DISABLED, GREEN, MUTED, PANEL_RAISED, SELECTED, TEXT,
 };
 use super::widgets::{ButtonStyle, OnClick, body_text, button, caption, card, checkbox_row};
 use crate::store::{Mode, Store};
@@ -53,6 +53,9 @@ pub struct SettingsView {
     store: Entity<Store>,
     client_id: Entity<TextInput>,
     client_secret: Entity<TextInput>,
+    /// Extra time zones for the week and day views, as typed.
+    zones: Entity<TextInput>,
+    zones_error: Option<String>,
     /// The stored client id last copied into the field, so edits are not overwritten.
     shown_client: Option<Option<String>>,
     focus: FocusHandle,
@@ -67,6 +70,9 @@ impl SettingsView {
         let client_id =
             cx.new(|cx| TextInput::new("1234567890-abc.apps.googleusercontent.com", false, 1, cx));
         let client_secret = cx.new(|cx| TextInput::new("GOCSPX-…", true, 2, cx));
+        let zones = cx.new(|cx| TextInput::new("America/New_York, Asia/Tokyo", false, 3, cx));
+        let saved_zones = store.read(cx).prefs.secondary_zones.join(", ");
+        zones.update(cx, |i, cx| i.set_text(saved_zones, cx));
         let subscription = cx.observe(&store, |this, _, cx| {
             this.sync_from_store(cx);
             cx.notify();
@@ -75,6 +81,8 @@ impl SettingsView {
             store,
             client_id,
             client_secret,
+            zones,
+            zones_error: None,
             shown_client: None,
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
@@ -123,6 +131,25 @@ impl SettingsView {
             i.set_text("", cx);
             i.set_masked(true, cx);
         });
+    }
+
+    /// Applies the extra time zones field.
+    fn save_zones(&mut self, cx: &mut Context<Self>) {
+        let text = self.zones.read(cx).text().to_string();
+        match crate::zones::parse_zone_list(&text, crate::zones::lookup) {
+            Ok(list) => {
+                self.zones_error = None;
+                self.zones
+                    .update(cx, |i, cx| i.set_text(list.join(", "), cx));
+                self.store.update(cx, |s, cx| {
+                    s.prefs.secondary_zones = list;
+                    s.prefs.save();
+                    cx.notify();
+                });
+            }
+            Err(e) => self.zones_error = Some(e),
+        }
+        cx.notify();
     }
 
     fn click(
@@ -190,6 +217,7 @@ impl Render for SettingsView {
         let offline_cache = store.prefs.offline_cache;
         let show_declined = store.prefs.show_declined;
         let secret_masked = self.client_secret.read(cx).is_masked();
+        let zones_error = self.zones_error.clone();
 
         let client_card =
             card("Google OAuth client")
@@ -483,7 +511,36 @@ impl Render for SettingsView {
                         cx.notify();
                     })
                 })),
-            ));
+            ))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.0))
+                    .child(caption("EXTRA TIME ZONES"))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().flex_1().child(self.zones.clone()))
+                            .child(button(
+                                "save-zones",
+                                "Apply",
+                                ButtonStyle::Secondary,
+                                Some(self.click(cx, |this, _, cx| this.save_zones(cx))),
+                            )),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(rgb(if zones_error.is_some() { AMBER } else { MUTED }))
+                            .child(zones_error.unwrap_or_else(|| {
+                                "Up to two, such as Europe/London. Shown beside the hours in the week and day views."
+                                    .to_string()
+                            })),
+                    ),
+            );
 
         div()
             .id("settings")

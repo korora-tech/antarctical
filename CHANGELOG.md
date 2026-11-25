@@ -15,6 +15,7 @@ All notable changes to Antarctical are recorded here. The format follows [Keep a
 
 ### Added
 
+- **Extra time zones:** Settings → Preferences → Extra time zones takes up to two IANA names (for example `Europe/London, Asia/Tokyo`) and shows what each clock reads beside the hour gutter of the week and day views, headed by the zone's abbreviation. Names are checked when applied. Events still display in your system time zone; per-event zones are not supported yet.
 - **Noctalia:** `antarctical vdir DIR` mirrors the calendars shown in the sidebar into a vdir that Noctalia's own calendar reads (a `type = "vdir"` account), so its Calendar tab shows your events. `noctalia-plugin/` adds a bar widget with the current or next event today and a Join button for video calls, plus `/cal` launcher search. Home Manager: `programs.antarctical.noctalia.enable` and `programs.antarctical.vdir.enable`.
 - **Command line:** `antarctical events [--days N] [--watch]` prints the running app's agenda as JSON, `antarctical show [--date YYYY-MM-DD]` brings its window forward on a date, and `antarctical refresh` syncs now.
 - **Notification actions:** reminder notifications now have a Join button (events with a video call) that opens the call, and Snooze 5 min, which shows the reminder again with the time left worked out afresh (dropped if the event is over by then). Snoozes are kept in memory only, so quitting the app cancels them. Notifications stay up for 30 seconds instead of 15.
