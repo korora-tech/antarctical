@@ -91,6 +91,24 @@ pub fn event_time_parts_on(
 }
 
 /// Full description of when an event happens, for the detail panel.
+/// For an event set in another zone than yours: its times as they read there ("10:00 – 11:00
+/// Europe/Berlin"). `None` when it has no zone, or the zone reads the same as yours at its start.
+pub fn other_zone_note(
+    e: &Event,
+    name: &str,
+    zone: &TimeZone,
+    local: &TimeZone,
+    clock_24h: bool,
+) -> Option<String> {
+    let When::Timed { start, .. } = e.when else {
+        return None;
+    };
+    if zone.to_offset(start) == local.to_offset(start) {
+        return None;
+    }
+    Some(format!("{} {name}", event_time(e, zone, clock_24h)))
+}
+
 pub fn event_when_long(e: &Event, tz: &TimeZone, clock_24h: bool) -> String {
     match e.when {
         When::AllDay { start, end } => {
@@ -179,6 +197,48 @@ mod tests {
     use jiff::civil::date;
 
     #[test]
+    fn events_in_another_zone_say_what_the_clock_read_there() {
+        let mut e = Event {
+            id: "e".into(),
+            calendar_id: "c".into(),
+            title: "t".into(),
+            when: When::Timed {
+                start: "2026-11-25T09:00:00Z".parse().unwrap(),
+                end: "2026-11-25T10:00:00Z".parse().unwrap(),
+            },
+            color: None,
+            location: None,
+            description: None,
+            html_link: None,
+            meet_link: None,
+            organizer: None,
+            attendees: vec![],
+            reminders: vec![],
+            tentative: false,
+            kind: Default::default(),
+            time_zone: None,
+        };
+        let tokyo = TimeZone::fixed(jiff::tz::offset(9));
+        assert_eq!(
+            other_zone_note(&e, "Asia/Tokyo", &tokyo, &TimeZone::UTC, true).as_deref(),
+            Some("18:00 – 19:00 Asia/Tokyo")
+        );
+        // The same wall clock as yours: nothing to add.
+        assert_eq!(
+            other_zone_note(&e, "Etc/UTC", &TimeZone::UTC, &TimeZone::UTC, true),
+            None
+        );
+        e.when = When::AllDay {
+            start: date(2026, 11, 25),
+            end: date(2026, 11, 26),
+        };
+        assert_eq!(
+            other_zone_note(&e, "Asia/Tokyo", &tokyo, &TimeZone::UTC, true),
+            None
+        );
+    }
+
+    #[test]
     fn titles() {
         let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
         assert_eq!(
@@ -256,6 +316,7 @@ mod tests {
             reminders: vec![],
             tentative: false,
             kind: Default::default(),
+            time_zone: None,
         };
         assert_eq!(
             event_time_on(&e, date(2026, 10, 21), &tz, true),
@@ -288,6 +349,7 @@ mod tests {
             reminders: vec![],
             tentative: false,
             kind: Default::default(),
+            time_zone: None,
         };
         let some = |a: &str, b: Option<&str>| Some((a.to_string(), b.map(String::from)));
         let d21 = date(2026, 10, 21);
@@ -353,6 +415,7 @@ mod tests {
             reminders: vec![],
             tentative: false,
             kind: Default::default(),
+            time_zone: None,
         };
         let d21 = date(2026, 10, 21);
         let d22 = date(2026, 10, 22);

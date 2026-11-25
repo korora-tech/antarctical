@@ -168,6 +168,7 @@ mod tests {
             reminders: vec![10],
             tentative: false,
             kind: Default::default(),
+            time_zone: None,
         };
         let mut months = BTreeMap::new();
         months.insert(date(2026, 11, 1), vec![event]);

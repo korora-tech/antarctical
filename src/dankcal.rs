@@ -1020,6 +1020,7 @@ mod tests {
             reminders: vec![10],
             tentative: false,
             kind: Default::default(),
+            time_zone: None,
         }
     }
 

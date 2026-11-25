@@ -85,6 +85,7 @@ fn event_from_draft(calendar: &Calendar, id: String, draft: &EventDraft) -> Even
         reminders: vec![10],
         tentative: false,
         kind: Default::default(),
+        time_zone: None,
     }
 }
 
@@ -397,6 +398,7 @@ fn events_for(cal: &Calendar, month: Date, today: Date, tz: &TimeZone) -> Vec<Ev
         reminders: cal.default_reminders.clone(),
         tentative: false,
         kind: Default::default(),
+        time_zone: None,
     };
     let timed = |d: Date, (h1, m1): (i8, i8), (h2, m2): (i8, i8)| When::Timed {
         start: at(d, h1, m1, tz),

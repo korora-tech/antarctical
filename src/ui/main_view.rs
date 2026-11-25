@@ -1379,6 +1379,22 @@ impl MainView {
                                         .text_color(rgb(SECONDARY))
                                         .child(format::event_when_long(event, &tz, clock)),
                                 )
+                                .children(
+                                    event
+                                        .time_zone
+                                        .as_deref()
+                                        .and_then(|name| {
+                                            let zone = crate::zones::lookup(name)?;
+                                            format::other_zone_note(event, name, &zone, &tz, clock)
+                                        })
+                                        .map(|note| {
+                                            div()
+                                                .mt(px(2.0))
+                                                .text_size(px(12.0))
+                                                .text_color(rgb(CAPTION))
+                                                .child(note)
+                                        }),
+                                )
                                 .child(
                                     div()
                                         .mt(px(4.0))

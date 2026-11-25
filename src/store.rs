@@ -426,6 +426,7 @@ impl Store {
             },
             tentative: false,
             kind: Default::default(),
+            time_zone: None,
         }
     }
 
@@ -1365,6 +1366,7 @@ mod tests {
             reminders: vec![],
             tentative: false,
             kind: Default::default(),
+            time_zone: None,
         }
     }
 

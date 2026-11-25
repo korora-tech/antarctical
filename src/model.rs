@@ -140,6 +140,9 @@ pub struct Event {
     /// What kind of entry this is (a normal event, out of office, focus time, working location).
     #[serde(default)]
     pub kind: EventKind,
+    /// The IANA zone the event was set in, when Google says (timed events only).
+    #[serde(default)]
+    pub time_zone: Option<String>,
 }
 
 /// Google's `eventType`, for the kinds the app treats differently.
@@ -374,6 +377,7 @@ mod tests {
             reminders: vec![],
             tentative: false,
             kind: Default::default(),
+            time_zone: None,
         }
     }
 
