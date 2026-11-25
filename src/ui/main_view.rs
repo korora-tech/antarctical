@@ -85,6 +85,8 @@ pub struct MainView {
     compose: Option<Compose>,
     /// An event being dragged or resized in the time grid.
     pub(super) drag: Option<super::calendar_views::DragState>,
+    /// A slot being dragged out over empty space in the time grid.
+    pub(super) creating: Option<super::calendar_views::CreateState>,
     _compose_subscription: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
     _ticker: Task<()>,
@@ -130,6 +132,7 @@ impl MainView {
             wanted: vec![],
             compose: None,
             drag: None,
+            creating: None,
             _compose_subscription: None,
             _subscriptions: subs,
             _ticker: ticker,
@@ -179,12 +182,22 @@ impl MainView {
     }
 
     fn open_quick_add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_quick_add_at(None, window, cx);
+    }
+
+    /// Opens the quick-add bar, optionally with a time already chosen (by dragging in the grid).
+    pub(super) fn open_quick_add_at(
+        &mut self,
+        when: Option<crate::model::When>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.compose.is_some() || self.screen != Screen::Calendar {
             return;
         }
         let store = self.store.clone();
         let anchor = self.anchor;
-        let view = cx.new(|cx| QuickAddView::new(store, anchor, cx));
+        let view = cx.new(|cx| QuickAddView::new(store, anchor, when, cx));
         self._compose_subscription = Some(cx.subscribe_in(
             &view,
             window,

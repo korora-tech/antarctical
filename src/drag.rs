@@ -63,6 +63,29 @@ pub fn apply(block: Block, mode: Mode, minutes: i32, days: i32) -> Block {
     }
 }
 
+/// The block made by dragging across empty space: from where the pointer went down (`anchor`,
+/// minutes) by `delta` minutes, either way. No movement gives an hour, the length Google uses.
+pub fn create_block(date: Date, anchor: i32, delta: i32) -> Block {
+    let anchor = anchor.clamp(0, DAY_MINUTES - SNAP_MINUTES);
+    if delta == 0 {
+        let start = anchor.min(DAY_MINUTES - 60);
+        return Block {
+            date,
+            start,
+            end: start + 60,
+        };
+    }
+    let other = (anchor + delta).clamp(0, DAY_MINUTES);
+    let (start, end) = (anchor.min(other), anchor.max(other));
+    // Dragging up from the very top (or down off the bottom) still yields a real slot.
+    let end = end.max(start + SNAP_MINUTES);
+    Block {
+        date,
+        start: start.min(end - SNAP_MINUTES),
+        end,
+    }
+}
+
 /// The block an event occupies, when it is a timed event within a single day (the only kind
 /// that is dragged).
 pub fn block_of(event: &Event, tz: &TimeZone) -> Option<Block> {
@@ -161,6 +184,25 @@ mod tests {
         assert_eq!(apply(b, Mode::ResizeStart, -30, 0), block(510, 600));
         assert_eq!(apply(b, Mode::ResizeStart, 500, 0), block(585, 600));
         assert_eq!(apply(b, Mode::ResizeStart, -5000, 0).start, 0);
+    }
+
+    #[test]
+    fn dragging_across_empty_space_makes_a_slot_either_way() {
+        let d = date(2026, 11, 25);
+        let at = |h: i32, m: i32| h * 60 + m;
+        let b = create_block(d, at(14, 0), 90);
+        assert_eq!((b.start, b.end), (at(14, 0), at(15, 30)));
+        let b = create_block(d, at(14, 0), -45);
+        assert_eq!((b.start, b.end), (at(13, 15), at(14, 0)));
+        let b = create_block(d, at(14, 0), 0);
+        assert_eq!((b.start, b.end), (at(14, 0), at(15, 0)));
+        let b = create_block(d, at(23, 30), 0);
+        assert_eq!((b.start, b.end), (at(23, 0), at(24, 0)));
+        let b = create_block(d, at(0, 0), -60);
+        assert_eq!((b.start, b.end), (0, SNAP_MINUTES));
+        let b = create_block(d, at(23, 45), 500);
+        assert_eq!((b.start, b.end), (at(23, 45), at(24, 0)));
+        assert_eq!(b.date, d);
     }
 
     fn timed(start: &str, end: &str) -> Event {

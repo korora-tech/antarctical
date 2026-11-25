@@ -52,6 +52,22 @@ pub(super) struct DragState {
     pub(super) current: Block,
 }
 
+/// Dragging across empty space in a day column to make a new event.
+#[derive(Clone)]
+pub(super) struct CreateDrag {
+    pub(super) date: Date,
+}
+
+/// A new-event slot being dragged out.
+#[derive(Clone)]
+pub(super) struct CreateState {
+    /// Minutes where the pointer went down, snapped down to a quarter hour.
+    anchor: i32,
+    /// Pointer position at the first move; later positions are measured from here.
+    origin: Option<gpui::Point<gpui::Pixels>>,
+    pub(super) block: Block,
+}
+
 /// The (invisible) thing that follows the pointer while dragging; the real feedback is the block
 /// moving in the grid.
 struct DragGhost;
@@ -170,6 +186,73 @@ impl MainView {
             })
             .detach();
             ghost
+        }
+    }
+
+    /// Like [`Self::ghost`], for a drag that starts on empty space: the pointer's offset in the
+    /// column says where the slot begins.
+    fn create_ghost(
+        &self,
+        cx: &Context<Self>,
+    ) -> impl Fn(
+        &CreateDrag,
+        gpui::Point<gpui::Pixels>,
+        &mut Window,
+        &mut gpui::App,
+    ) -> gpui::Entity<DragGhost>
+    + 'static {
+        let view = cx.entity();
+        move |dragged, offset, _, cx| {
+            let minutes = (f32::from(offset.y) / HOUR_PX * 60.0).floor() as i32;
+            let anchor = minutes.div_euclid(drag::SNAP_MINUTES) * drag::SNAP_MINUTES;
+            let date = dragged.date;
+            view.update(cx, |this, cx| {
+                this.creating = Some(CreateState {
+                    anchor,
+                    origin: None,
+                    block: drag::create_block(date, anchor, 0),
+                });
+                cx.notify();
+            });
+            let ghost = cx.new(|_| DragGhost);
+            let view = view.clone();
+            cx.observe_release(&ghost, move |_, cx| {
+                view.update(cx, |this, cx| {
+                    if this.creating.take().is_some() {
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+            ghost
+        }
+    }
+
+    fn create_to(
+        &mut self,
+        dragged: &CreateDrag,
+        pointer: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(state) = self.creating.as_mut() else {
+            return;
+        };
+        let origin = *state.origin.get_or_insert(pointer);
+        let delta = drag::snapped_minutes(f32::from(pointer.y - origin.y), HOUR_PX);
+        let block = drag::create_block(dragged.date, state.anchor, delta);
+        if state.block != block {
+            state.block = block;
+            cx.notify();
+        }
+    }
+
+    fn finish_create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = self.creating.take() else {
+            return;
+        };
+        cx.notify();
+        if let Some(when) = drag::when_of(state.block, &TimeZone::system()) {
+            self.open_quick_add_at(Some(when), window, cx);
         }
     }
 
@@ -862,6 +945,7 @@ impl MainView {
                 .h_full()
                 .border_l_1()
                 .border_color(rgb(GRID_LINE))
+                .on_drag(CreateDrag { date: d }, self.create_ghost(cx))
                 .when(wash && d == today, |c| c.bg(rgb(TODAY_BG)))
                 .when(wash && weekend && d != today, |c| c.bg(rgb(WEEKEND_BG)))
                 .children((1..24).map(|h| {
@@ -1121,6 +1205,43 @@ impl MainView {
                         .on_click(self.event_click(e, cx)),
                 );
             }
+            if let Some(state) = self.creating.as_ref().filter(|s| s.block.date == d) {
+                let top = state.block.start as f32 * HOUR_PX / 60.0;
+                let height = (state.block.end - state.block.start) as f32 * HOUR_PX / 60.0;
+                let label = |minutes: i32| {
+                    let (h, m) = ((minutes / 60) % 24, minutes % 60);
+                    format::time(
+                        &d.at(h as i8, m as i8, 0, 0)
+                            .to_zoned(tz.clone())
+                            .unwrap_or_else(|_| now.clone()),
+                        clock,
+                    )
+                };
+                col = col.child(
+                    div()
+                        .absolute()
+                        .top(px(top + 1.0))
+                        .h(px((height - 2.0).max(8.0)))
+                        .left(px(EVENT_GUTTER_L))
+                        .right(px(EVENT_GUTTER_R))
+                        .rounded(px(EVENT_RADIUS))
+                        .bg(rgb(tint(ACCENT, BG, EVENT_FILL_SELECTED)))
+                        .border_1()
+                        .border_color(rgb(ACCENT))
+                        .px(px(EVENT_PAD_X))
+                        .text_size(px(EVENT_META_PX))
+                        .line_height(px(EVENT_LINE_H))
+                        .font_weight(FontWeight::MEDIUM)
+                        .font_features(tabular())
+                        .text_color(rgb(TEXT))
+                        .overflow_hidden()
+                        .child(format!(
+                            "{} – {}",
+                            label(state.block.start),
+                            label(state.block.end)
+                        )),
+                );
+            }
             if d == today {
                 // After the chips, so the line draws on top. The head sits inside the column
                 // so nothing clips it; the BG ring sets it apart from a chip's accent bar.
@@ -1181,6 +1302,12 @@ impl MainView {
                             this.finish_drag(dragged, cx)
                         }),
                     )
+                    .on_drag_move(cx.listener(|this, ev: &DragMoveEvent<CreateDrag>, _, cx| {
+                        this.create_to(&ev.drag(cx).clone(), ev.event.position, cx);
+                    }))
+                    .on_drop(cx.listener(|this, _: &CreateDrag, window, cx| {
+                        this.finish_create(window, cx)
+                    }))
                     .child(
                         div()
                             .h(px(24.0 * HOUR_PX))
