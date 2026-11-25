@@ -94,6 +94,7 @@ These talk to the running Antarctical over its socket and never start the app. T
 | `antarctical vdir DIR` | Mirrors the calendars into `DIR` (see above). Runs until stopped. |
 | `antarctical show [--date YYYY-MM-DD]` | Brings the window forward, optionally on a date. |
 | `antarctical refresh` | Syncs now. |
+| `antarctical FILE.ics …` | Opens an import window for the events in each iCalendar file (see below). Hands the file to the running instance when there is one. |
 
 An event has `id`, `title`, `calendar`, `color`, `startMs`, `endMs` (milliseconds since the Unix epoch; all-day events run from local midnight to local midnight), `allDay`, `location`, `url`, `meetingUrl`, `tentative` and `declined`. Events of calendars hidden in the sidebar are left out, and the two links are only ever `http(s)` addresses.
 
@@ -131,3 +132,12 @@ Pass `antarctical` to your Home Manager modules with `extraSpecialArgs = { inher
 - `dux.setCalendarBackend` (off by default) sets Dux's `calendarBackend = "dankcal"` through `programs.dank-material-shell.settings`. That makes Home Manager own Dux's `~/.config/dms/settings.json` (a read-only link with only what Nix declares), so turn it on only if you already manage Dux's settings with Home Manager; otherwise choose the backend in Dux.
 - The service restarts always, 10 s after it exits. A start while Antarctical already runs (opened by hand) logs one hand-off line and exits, and the service takes over once that instance quits. Quitting from the tray therefore lasts only until the next restart; `systemctl --user stop antarctical` closes it for the session.
 - Antarctical's own `settings.json` is not managed: the app writes calendar visibility there.
+
+## Importing `.ics` files
+
+`antarctical FILE.ics` (or opening a `.ics` file with Antarctical, which the desktop entry registers for `text/calendar`) shows what the file holds and which calendar it will go to, then creates the events in Google on **Import**. It needs editing turned on for the account.
+
+- Read: summary, start, end or duration, location, description, `RRULE`, all-day dates, UTC times, and `TZID` zones the system knows (other or floating times are taken as your local zone). Repeating rules are kept only for timed events whose zone is known.
+- Left out and counted: cancelled events, single-occurrence changes (`RECURRENCE-ID`), entries with no usable start, and anything past 200 events or a 1 MB file.
+- Never imported: guests (nobody is invited), alarms (events get the calendar's default reminders), attachments.
+- Over the socket the running instance answers `antarctical.import` with an absolute `path`.

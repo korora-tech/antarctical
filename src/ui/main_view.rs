@@ -13,6 +13,7 @@ use jiff::tz::TimeZone;
 
 use super::compose::{ComposeEvent, EditorView, QuickAddView};
 use super::format;
+use super::import::ImportView;
 use super::palette::PaletteView;
 use super::settings::{SettingsEvent, SettingsView};
 use super::theme::{
@@ -68,6 +69,7 @@ enum Compose {
     QuickAdd(Entity<QuickAddView>),
     Edit(Entity<EditorView>),
     Palette(Entity<PaletteView>),
+    Import(Entity<ImportView>),
 }
 
 pub struct MainView {
@@ -185,6 +187,32 @@ impl MainView {
                 self.run_palette_action(action.clone(), window, cx);
             }
         }
+    }
+
+    /// Offers to import the events of an `.ics` file, or says why it cannot.
+    pub fn open_import(
+        &mut self,
+        name: String,
+        outcome: Result<crate::ics::Parsed, String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.screen != Screen::Calendar {
+            self.show_calendar(window, cx);
+        }
+        // Whatever was open is replaced: the file was asked for.
+        self.close_compose(window, cx);
+        let store = self.store.clone();
+        let view = cx.new(|cx| ImportView::new(store, name, outcome, cx));
+        self._compose_subscription = Some(cx.subscribe_in(
+            &view,
+            window,
+            |this, _, ev: &ComposeEvent, window, cx| this.on_compose_event(ev, window, cx),
+        ));
+        let handle = view.read(cx).first_focus(cx);
+        self.compose = Some(Compose::Import(view));
+        window.focus(&handle, cx);
+        cx.notify();
     }
 
     fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1579,6 +1607,7 @@ impl Render for MainView {
                 Some(Compose::QuickAdd(view)) => Some(view.clone().into_any_element()),
                 Some(Compose::Edit(view)) => Some(view.clone().into_any_element()),
                 Some(Compose::Palette(view)) => Some(view.clone().into_any_element()),
+                Some(Compose::Import(view)) => Some(view.clone().into_any_element()),
                 None => None,
             })
     }

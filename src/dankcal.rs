@@ -10,7 +10,8 @@
 //! The same socket makes Antarctical single-instance: a second launch finds it, recognises it
 //! with the private `antarctical.hello`, asks it to `antarctical.show` and exits. The
 //! command-line client (`cli.rs`) finds the running instance the same way and adds
-//! `antarctical.show` with a `date` and `antarctical.refresh`.
+//! `antarctical.show` with a `date`, `antarctical.refresh` and `antarctical.import` (an absolute
+//! `path` to an `.ics` file the UI offers to import).
 //!
 //! Plain threads (one to accept, one per connection) read a [`Snapshot`] that the UI thread
 //! publishes whenever the store changes.
@@ -56,12 +57,14 @@ const WRITE_METHODS: &[&str] = &[
 ];
 
 /// What a socket client asks of the UI.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ShellAction {
     /// Another launch of Antarctical: bring the main window forward.
     Show,
     /// Bring the main window forward on this date.
     ShowAt(Date),
+    /// Offer to import the events of this `.ics` file.
+    Import(PathBuf),
 }
 
 // ----- snapshot -------------------------------------------------------------------------------
@@ -938,6 +941,17 @@ fn respond(shared: &Shared, conn: u64, writer: &Arc<Mutex<UnixStream>>, req: &Va
             let _ = shared.actions.send_blocking(action);
             Ok(json!(true))
         }
+        "antarctical.import" => match params["path"]
+            .as_str()
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+        {
+            Some(path) => {
+                let _ = shared.actions.send_blocking(ShellAction::Import(path));
+                Ok(json!(true))
+            }
+            None => Err("path must be an absolute file path".to_string()),
+        },
         "antarctical.refresh" => {
             let want = shared.want.lock().expect("want lock");
             want.sync.send(Command::Refresh);
@@ -1343,6 +1357,15 @@ mod tests {
         // A date that does not parse still shows the window.
         request(&mut c, "antarctical.show", json!({"date": "tomorrow"}));
         assert_eq!(h.actions.try_recv().unwrap(), ShellAction::Show);
+
+        // Imports need an absolute path.
+        request(&mut c, "antarctical.import", json!({"path": "/tmp/a.ics"}));
+        assert_eq!(
+            h.actions.try_recv().unwrap(),
+            ShellAction::Import(PathBuf::from("/tmp/a.ics"))
+        );
+        let relative = request(&mut c, "antarctical.import", json!({"path": "a.ics"}));
+        assert!(relative["error"].is_string() && h.actions.try_recv().is_err());
 
         while h.sync_rx.try_recv().is_ok() {}
         request(&mut c, "antarctical.refresh", Value::Null);

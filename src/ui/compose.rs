@@ -359,7 +359,7 @@ pub(super) fn panel() -> gpui::Div {
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
 }
 
-fn fact(label: &'static str, value: String, color: u32) -> gpui::Div {
+pub(super) fn fact(label: &'static str, value: String, color: u32) -> gpui::Div {
     div()
         .flex()
         .items_baseline()
