@@ -848,7 +848,11 @@ mod tests {
 
     /// Wednesday 2026-11-25 10:00 UTC.
     fn now() -> Zoned {
-        "2026-11-25T10:00:00[UTC]".parse().unwrap()
+        // No tz database in the Nix sandbox: build the zone from the constant.
+        "2026-11-25T10:00:00Z"
+            .parse::<jiff::Timestamp>()
+            .unwrap()
+            .to_zoned(TimeZone::UTC)
     }
 
     fn timed(p: &Parsed) -> (String, String) {

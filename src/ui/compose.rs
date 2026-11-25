@@ -771,7 +771,11 @@ mod tests {
     use jiff::civil::date;
 
     fn now() -> Zoned {
-        "2026-11-25T10:20:00[UTC]".parse().unwrap()
+        // No tz database in the Nix sandbox: build the zone from the constant.
+        "2026-11-25T10:20:00Z"
+            .parse::<jiff::Timestamp>()
+            .unwrap()
+            .to_zoned(TimeZone::UTC)
     }
 
     fn cal(account: &str, id: &str, name: &str, primary: bool) -> Calendar {
