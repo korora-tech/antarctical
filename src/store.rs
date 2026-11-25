@@ -381,7 +381,10 @@ impl Store {
         event.title = draft.title.clone();
         event.when = draft.when;
         event.location = draft.location.clone().filter(|l| !l.is_empty());
-        event.description = draft.description.clone().filter(|d| !d.is_empty());
+        // Like the patch sent to Google, an absent description leaves the old one alone.
+        if let Some(description) = &draft.description {
+            event.description = Some(description.clone()).filter(|d| !d.is_empty());
+        }
         let ticket = self.ticket();
         self.insert_event(event.clone());
         self.pending_writes.insert(

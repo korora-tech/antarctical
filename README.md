@@ -27,7 +27,7 @@ A native Google Calendar viewer for Linux, built with Rust and [GPUI](https://ww
 
 - **Quick add and editing:** press `n` and type `Lunch with Sam tomorrow 1pm at Dishoom`. A live preview shows what was understood; Enter creates the event. Select an event and press `e` to change its title, time or location, or to delete it.
 
-**Current limits:** editing is off by default for every account; enabling it requests Google's event-write scope through a fresh sign-in for that account. You can create, edit and delete single events and create repeating ones, but cannot yet edit a repeating series as a whole, drag events, or change guests, reminders or the calendar of an existing event. The offline copy is a snapshot shown at startup until the network answers, not a full offline mode: it covers the months you have loaded, within six months of today, and changes made offline are not queued.
+**Current limits:** editing is off by default for every account; enabling it requests Google's event-write scope through a fresh sign-in for that account. You can create, edit and delete single events, create repeating ones, and drag timed events in the week and day views to move or resize them (15-minute steps; only events you organise, within one day). You cannot yet edit a repeating series as a whole, drag in the month view, or change guests, reminders or the calendar of an existing event. The offline copy is a snapshot shown at startup until the network answers, not a full offline mode: it covers the months you have loaded, within six months of today, and changes made offline are not queued.
 
 ## Try it without a Google account
 

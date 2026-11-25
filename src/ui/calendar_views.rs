@@ -2,8 +2,8 @@
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, ClickEvent, Context, Div, FontWeight, SharedString, Stateful, Window, div, px,
-    relative, rgb,
+    AnyElement, ClickEvent, Context, Div, DragMoveEvent, FontWeight, Render, SharedString,
+    Stateful, Window, div, px, relative, rgb,
 };
 use jiff::civil::{Date, Weekday};
 use jiff::tz::TimeZone;
@@ -27,10 +27,43 @@ use super::theme::{
     WEEKEND_BG, event_ring, event_subtext, event_text, tabular, tint,
 };
 use super::widgets::EventText;
+use crate::drag::{self, Block, Mode};
 use crate::layout;
 use crate::model;
 use crate::model::Event;
 use crate::store::Store;
+
+/// What is being dragged in the time grid: one event and how it is being changed.
+#[derive(Clone)]
+pub(super) struct EventDrag {
+    pub(super) calendar_id: String,
+    pub(super) event_id: String,
+    pub(super) mode: Mode,
+    /// Where the event was when the drag started.
+    pub(super) original: Block,
+}
+
+/// A drag in progress, as shown in the grid.
+#[derive(Clone)]
+pub(super) struct DragState {
+    pub(super) event: EventDrag,
+    /// Where the pointer was at the first move; later positions are measured from here.
+    pub(super) origin: gpui::Point<gpui::Pixels>,
+    pub(super) current: Block,
+}
+
+/// The (invisible) thing that follows the pointer while dragging; the real feedback is the block
+/// moving in the grid.
+struct DragGhost;
+
+impl Render for DragGhost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
+
+/// Height of the grab strip at the top and bottom edge of a block.
+const RESIZE_GRIP: f32 = 6.0;
 
 const MONTH_ROW_H: f32 = 19.0;
 const DAY_MINUTES: i32 = 24 * 60;
@@ -99,6 +132,112 @@ impl MainView {
             cx.stop_propagation();
             this.select(&e, cx);
         })
+    }
+
+    /// A block that can be dragged: a timed event within one day, on a calendar whose account may
+    /// be edited, that the user organises (or that has no guests).
+    fn draggable_block(&self, store: &Store, e: &Event, tz: &TimeZone) -> Option<Block> {
+        let account = &store.calendar(&e.calendar_id)?.account;
+        let organiser =
+            e.attendees.is_empty() || e.attendees.iter().any(|a| a.is_self && a.organizer);
+        (store.can_edit(account) && !store.is_pending_event(&e.id) && organiser)
+            .then(|| drag::block_of(e, tz))
+            .flatten()
+    }
+
+    /// Builds the invisible drag view, and ends the drag when it is let go anywhere (a drop on the
+    /// grid commits first; this only cancels what is left).
+    fn ghost(
+        &self,
+        cx: &Context<Self>,
+    ) -> impl Fn(
+        &EventDrag,
+        gpui::Point<gpui::Pixels>,
+        &mut Window,
+        &mut gpui::App,
+    ) -> gpui::Entity<DragGhost>
+    + 'static {
+        let view = cx.entity();
+        move |_, _, _, cx| {
+            let ghost = cx.new(|_| DragGhost);
+            let view = view.clone();
+            cx.observe_release(&ghost, move |_, cx| {
+                view.update(cx, |this, cx| {
+                    if this.drag.take().is_some() {
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+            ghost
+        }
+    }
+
+    fn drag_to(
+        &mut self,
+        dragged: EventDrag,
+        pointer: gpui::Point<gpui::Pixels>,
+        column_w: f32,
+        first: Date,
+        days: i32,
+        cx: &mut Context<Self>,
+    ) {
+        let origin = self.drag.as_ref().map_or(pointer, |s| s.origin);
+        let minutes = drag::snapped_minutes(f32::from(pointer.y - origin.y), HOUR_PX);
+        let shift = drag::dragged_days(f32::from(pointer.x - origin.x), column_w);
+        let date = dragged.original.date;
+        // Stay inside the days on screen.
+        let lo = first.until(date).map_or(0, |s| -s.get_days());
+        let hi = lo + days - 1;
+        let current = drag::apply(dragged.original, dragged.mode, minutes, shift.clamp(lo, hi));
+        let next = DragState {
+            event: dragged,
+            origin,
+            current,
+        };
+        if self.drag.as_ref().map(|s| s.current) != Some(current) || self.drag.is_none() {
+            self.drag = Some(next);
+            cx.notify();
+        }
+    }
+
+    fn finish_drag(&mut self, dragged: &EventDrag, cx: &mut Context<Self>) {
+        let Some(state) = self.drag.take() else {
+            return;
+        };
+        cx.notify();
+        if state.current == dragged.original {
+            return;
+        }
+        let tz = TimeZone::system();
+        let Some(when) = drag::when_of(state.current, &tz) else {
+            return;
+        };
+        let (calendar_id, event_id) = (dragged.calendar_id.clone(), dragged.event_id.clone());
+        self.store.update(cx, |store, cx| {
+            let calendar = store.calendar(&calendar_id).cloned();
+            let event = store.find_event(&calendar_id, &event_id).cloned();
+            let (Some(calendar), Some(event)) = (calendar, event) else {
+                return;
+            };
+            let draft = crate::google::api::EventDraft {
+                title: event.title.clone(),
+                when,
+                time_zone: tz.iana_name().map(str::to_string),
+                location: event.location.clone(),
+                description: None,
+                guests: vec![],
+                meet: false,
+                rrule: None,
+            };
+            if !store.update_event(&calendar, &event_id, draft) {
+                store.notice = Some((
+                    "That event can't be changed right now.".into(),
+                    std::time::Instant::now(),
+                ));
+            }
+            cx.notify();
+        });
     }
 
     /// A one-line chip: a soft ribbon for all-day events, a dot + time for timed ones.
@@ -419,8 +558,19 @@ impl MainView {
         let today = now.date();
         let clock = store.prefs.clock_24h;
         let dates: Vec<Date> = (0..days).map(|i| model::add_days(first, i)).collect();
+        let preview: Option<Event> = self.drag.as_ref().and_then(|state| {
+            let mut event = store
+                .find_event(&state.event.calendar_id, &state.event.event_id)?
+                .clone();
+            event.when = drag::when_of(state.current, &tz)?;
+            Some(event)
+        });
         let mut events = store.events_between(first, model::add_days(first, days), &tz);
         events.sort_by(|a, b| ribbon_order(a, b, &tz));
+        if let Some(moved) = &preview {
+            events.retain(|e| !(e.calendar_id == moved.calendar_id && e.id == moved.id));
+            events.push(moved);
+        }
         let now_min = now.hour() as i32 * 60 + now.minute() as i32;
         let now_top = now_min as f32 * HOUR_PX / 60.0;
         let shows_now = dates.contains(&today);
@@ -738,8 +888,16 @@ impl MainView {
             for ((e, (start, end)), slot) in timed.iter().zip(spans).zip(slots) {
                 let color = store.color_of(e);
                 let declined = e.declined();
-                let selected = self.is_selected(e);
+                let dragging = preview
+                    .as_ref()
+                    .is_some_and(|p| p.calendar_id == e.calendar_id && p.id == e.id);
+                let selected = self.is_selected(e) || dragging;
                 let faded = is_past(e, now_ts, &tz) && !selected && !declined;
+                let grab = if dragging {
+                    None
+                } else {
+                    self.draggable_block(store, e, &tz)
+                };
                 // gpui fades each primitive rather than a layer, so a faded block sits on an
                 // opaque copy of the column bg to keep the hour lines from showing through.
                 let underlay = if wash && d == today {
@@ -797,12 +955,54 @@ impl MainView {
                 } else {
                     half_gap
                 };
+                let block_id = format!("t-{d}-{}-{}", e.calendar_id, e.id);
+                let grip = RESIZE_GRIP.min(height / 4.0);
+                let strip = |suffix: &str, mode: Mode, at_top: bool| {
+                    let strip = div()
+                        .id(SharedString::from(format!("{block_id}-{suffix}")))
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .h(px(grip))
+                        .cursor_ns_resize();
+                    let strip = if at_top {
+                        strip.top_0()
+                    } else {
+                        strip.bottom_0()
+                    };
+                    match grab {
+                        Some(original) => strip.on_drag(
+                            EventDrag {
+                                calendar_id: e.calendar_id.clone(),
+                                event_id: e.id.clone(),
+                                mode,
+                                original,
+                            },
+                            self.ghost(cx),
+                        ),
+                        None => strip,
+                    }
+                };
+                let grips = grab.map(|_| {
+                    [
+                        strip("top", Mode::ResizeStart, true),
+                        strip("bottom", Mode::ResizeEnd, false),
+                    ]
+                });
                 col = col.child(
                     div()
-                        .id(SharedString::from(format!(
-                            "t-{d}-{}-{}",
-                            e.calendar_id, e.id
-                        )))
+                        .id(SharedString::from(block_id.clone()))
+                        .when_some(grab, |s, original| {
+                            s.on_drag(
+                                EventDrag {
+                                    calendar_id: e.calendar_id.clone(),
+                                    event_id: e.id.clone(),
+                                    mode: Mode::Move,
+                                    original,
+                                },
+                                self.ghost(cx),
+                            )
+                        })
                         .absolute()
                         .top(px(top + 1.0))
                         .h(px(height))
@@ -914,7 +1114,8 @@ impl MainView {
                                                     .border_1()
                                                     .border_color(rgb(event_ring(color))),
                                             )
-                                        }),
+                                        })
+                                        .children(grips.into_iter().flatten()),
                                 ),
                         )
                         .on_click(self.event_click(e, cx)),
@@ -961,6 +1162,25 @@ impl MainView {
                     .min_h(px(0.0))
                     .overflow_y_scroll()
                     .track_scroll(&self.grid_scroll)
+                    .on_drag_move(
+                        cx.listener(move |this, ev: &DragMoveEvent<EventDrag>, _, cx| {
+                            let column_w =
+                                (f32::from(ev.bounds.size.width) - GUTTER_W) / days as f32;
+                            this.drag_to(
+                                ev.drag(cx).clone(),
+                                ev.event.position,
+                                column_w,
+                                first,
+                                days,
+                                cx,
+                            );
+                        }),
+                    )
+                    .on_drop(
+                        cx.listener(|this, dragged: &EventDrag, _, cx| {
+                            this.finish_drag(dragged, cx)
+                        }),
+                    )
                     .child(
                         div()
                             .h(px(24.0 * HOUR_PX))

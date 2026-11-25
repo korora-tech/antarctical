@@ -5,6 +5,7 @@ mod cache;
 mod config;
 mod dankcal;
 mod demo;
+mod drag;
 mod google;
 mod layout;
 mod model;
