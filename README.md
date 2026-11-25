@@ -22,12 +22,12 @@ A native Google Calendar viewer for Linux, built with Rust and [GPUI](https://ww
 - **Meeting details:** see guests, location and description, join a video call, or open the event in Google Calendar.
 - **Invitation replies:** opt in per account to answer invitations with Yes, No or Maybe; replies update only that event occurrence.
 - **Automatic sync:** refresh every five minutes, refresh manually, and retry temporary network failures.
-- **Local credential storage:** refresh tokens stay in your system keyring; calendar data stays in memory. No app analytics or telemetry.
+- **Local credential storage:** refresh tokens stay in your system keyring; a copy of your last-synced calendar is kept in `$XDG_CACHE_HOME/antarctical/cache.json` (mode 0600; switch it off in Settings). No app analytics or telemetry.
 - **Linux desktop integration:** Wayland and X11, Nix packages, Home Manager autostart, and an optional Dux next-event widget.
 
 - **Quick add and editing:** press `n` and type `Lunch with Sam tomorrow 1pm at Dishoom`. A live preview shows what was understood; Enter creates the event. Select an event and press `e` to change its title, time or location, or to delete it.
 
-**Current limits:** editing is off by default for every account; enabling it requests Google's event-write scope through a fresh sign-in for that account. You can create, edit and delete single events and create repeating ones, but cannot yet edit a repeating series as a whole, drag events, or change guests, reminders or the calendar of an existing event. There is no persistent offline cache, so calendars are fetched again at startup.
+**Current limits:** editing is off by default for every account; enabling it requests Google's event-write scope through a fresh sign-in for that account. You can create, edit and delete single events and create repeating ones, but cannot yet edit a repeating series as a whole, drag events, or change guests, reminders or the calendar of an existing event. The offline copy is a snapshot shown at startup until the network answers, not a full offline mode: it covers the months you have loaded, within six months of today, and changes made offline are not queued.
 
 ## Try it without a Google account
 

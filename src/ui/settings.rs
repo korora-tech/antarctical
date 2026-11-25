@@ -187,6 +187,7 @@ impl Render for SettingsView {
         let stored_id = store.client_id.clone();
         let reminders = store.prefs.reminders;
         let clock_24h = store.prefs.clock_24h;
+        let offline_cache = store.prefs.offline_cache;
         let show_declined = store.prefs.show_declined;
         let secret_masked = self.client_secret.read(cx).is_masked();
 
@@ -440,6 +441,19 @@ impl Render for SettingsView {
                     this.store.update(cx, |s, cx| {
                         s.prefs.reminders = !s.prefs.reminders;
                         s.prefs.save();
+                        cx.notify();
+                    })
+                })),
+            ))
+            .child(checkbox_row(
+                "pref-offline",
+                "Keep an offline copy of my calendar on this computer",
+                ACCENT,
+                offline_cache,
+                Some(self.click(cx, |this, _, cx| {
+                    this.store.update(cx, |s, cx| {
+                        let on = !s.prefs.offline_cache;
+                        s.set_offline_cache(on);
                         cx.notify();
                     })
                 })),

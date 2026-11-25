@@ -59,8 +59,11 @@ import Page from "../layouts/Page.astro";
   <h2>Where your data is kept</h2>
   <ul>
     <li>
-      <strong>Calendar data</strong> is held in memory while Antarctical runs and is
-      not written to disk.
+      <strong>Calendar data</strong> is held in memory while Antarctical runs. By default
+      a copy of the calendars and events you have viewed (within six months of today) is
+      also saved to <code>cache.json</code> in your user cache folder, readable only by you, so the
+      app can show it before it reconnects. Turn this off in Settings → Preferences and the
+      file is deleted; signing out of your last account deletes it too.
     </li>
     <li>
       <strong>Sign-in tokens</strong> (one refresh token per Google account) and, if you

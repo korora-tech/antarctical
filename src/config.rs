@@ -24,6 +24,8 @@ pub struct Prefs {
     /// Accounts that have explicitly opted into RSVP and completed OAuth consent for it.
     pub rsvp_accounts: std::collections::BTreeSet<String>,
     pub reminders: bool,
+    /// Keep a copy of the last sync on disk so the app opens with data before the network answers.
+    pub offline_cache: bool,
     pub clock_24h: bool,
     pub view: ViewMode,
     /// Show events you declined (greyed and struck through). Off: they are hidden everywhere.
@@ -39,6 +41,7 @@ impl Default for Prefs {
             calendar_visibility: BTreeMap::new(),
             rsvp_accounts: std::collections::BTreeSet::new(),
             reminders: true,
+            offline_cache: true,
             clock_24h: true,
             view: ViewMode::Month,
             show_declined: false,
@@ -101,6 +104,7 @@ mod tests {
         let p: Prefs = serde_json::from_str(r#"{"view":"week","future":1}"#).unwrap();
         assert_eq!(p.view, ViewMode::Week);
         assert!(p.reminders);
+        assert!(p.offline_cache);
         assert!(!p.show_declined);
     }
 

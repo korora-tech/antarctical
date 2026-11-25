@@ -1,6 +1,7 @@
 //! Starts the GPUI application, sync worker, and optional system-tray integration.
 
 mod branding;
+mod cache;
 mod config;
 mod dankcal;
 mod demo;
@@ -116,7 +117,15 @@ fn main() {
         .with_quit_mode(QuitMode::Explicit)
         .run(move |cx: &mut App| {
             ui::bind_keys(cx);
-            let store = cx.new(|_| Store::new(sync.clone(), mode, prefs));
+            let cache = (mode == Mode::Google).then(cache::Writer::start).flatten();
+            let store = cx.new(|_| {
+                let store = Store::new(sync.clone(), mode, prefs);
+                if mode == Mode::Google {
+                    store.with_cache(cache)
+                } else {
+                    store
+                }
+            });
 
             // Sync worker → store.
             {

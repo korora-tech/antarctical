@@ -11,6 +11,7 @@ All notable changes to Antarctical are recorded here. The format follows [Keep a
 
 ### Added
 
+- **Offline copy:** the last-synced calendars and events are saved to `$XDG_CACHE_HOME/antarctical/cache.json` (mode 0600) and shown immediately at startup while Google is contacted. Settings → Preferences turns it off and deletes the file; so does signing out of your last account. Not Google sync tokens (they cannot be combined with the time-windowed fetch), and offline edits are not queued.
 - **Quick add:** `n` (or Ctrl+N, or the New event button) opens a one-line bar that understands `Lunch with Sam tomorrow 1pm at Dishoom`: dates, weekdays, times and ranges, durations, locations, guest emails, `/calendar`, `+meet`, and repeats such as `every weekday`. A live preview shows what will be created; Enter adds it.
 - **Create, edit and delete events:** changes appear at once and roll back with a message if Google refuses them. The editor (`e` on a selected event) changes title, time and location. Editing or deleting one occurrence of a repeating event affects only that occurrence.
 - Release workflow: pushing a `vX.Y.Z` tag publishes a GitHub release with a binary tarball and checksums.
