@@ -1346,6 +1346,7 @@ impl WireWorkingLocation {
 struct WireTime {
     date: Option<String>,
     date_time: Option<String>,
+    time_zone: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1426,6 +1427,7 @@ impl WireEvent {
             return None;
         }
         let kind = EventKind::from_google(self.event_type.as_deref());
+        let time_zone = self.start.as_ref().and_then(|t| t.time_zone.clone());
         let when = parse_when(self.start.as_ref()?, self.end.as_ref())?;
         let reminders = match &self.reminders {
             // Google applies calendar defaults to timed events only.
@@ -1472,6 +1474,7 @@ impl WireEvent {
             reminders,
             tentative: self.status.as_deref() == Some("tentative"),
             kind,
+            time_zone: time_zone.filter(|_| matches!(when, When::Timed { .. })),
         })
     }
 }
@@ -1831,6 +1834,20 @@ mod tests {
         assert!(e.declined());
         assert_eq!(e.color, Some(0xd50000));
         assert_eq!(e.attendees[1].name, "Bea");
+    }
+
+    #[test]
+    fn the_zone_an_event_was_set_in_is_kept_for_timed_events_only() {
+        let evs = parse(
+            r#"{"items":[
+            {"id":"t","start":{"dateTime":"2026-10-21T10:00:00+02:00","timeZone":"Europe/Berlin"},"end":{"dateTime":"2026-10-21T11:00:00+02:00"}},
+            {"id":"d","start":{"date":"2026-10-21","timeZone":"Europe/Berlin"},"end":{"date":"2026-10-22"}},
+            {"id":"n","start":{"dateTime":"2026-10-21T10:00:00Z"},"end":{"dateTime":"2026-10-21T11:00:00Z"}}
+            ]}"#,
+        );
+        assert_eq!(evs[0].time_zone.as_deref(), Some("Europe/Berlin"));
+        assert_eq!(evs[1].time_zone, None);
+        assert_eq!(evs[2].time_zone, None);
     }
 
     #[test]

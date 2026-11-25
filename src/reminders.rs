@@ -202,6 +202,7 @@ mod tests {
             reminders,
             tentative: false,
             kind: Default::default(),
+            time_zone: None,
         }
     }
 
