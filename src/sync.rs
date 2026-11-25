@@ -71,6 +71,12 @@ pub enum Command {
         event_id: String,
         draft: Box<EventDraft>,
     },
+    /// Deletes the occurrence `event_id` and every later one by ending its series before it.
+    DeleteFollowing {
+        ticket: u64,
+        calendar: Calendar,
+        event_id: String,
+    },
     /// Moves one event to another calendar of the same account, applying `draft` afterwards.
     MoveEvent {
         ticket: u64,
@@ -593,6 +599,13 @@ impl Worker {
             } => self.write(ticket, from, |agent, token, from| {
                 api::move_event(agent, token, from, &event.id, &to, draft.as_deref())
                     .map(|e| Some(Box::new(e)))
+            }),
+            Command::DeleteFollowing {
+                ticket,
+                calendar,
+                event_id,
+            } => self.write(ticket, calendar, |agent, token, cal| {
+                api::delete_following(agent, token, cal, &event_id).map(|()| None)
             }),
             Command::DeleteEvent {
                 ticket,
