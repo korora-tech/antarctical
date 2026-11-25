@@ -83,6 +83,8 @@ pub struct MainView {
     detail_scroll: ScrollHandle,
     wanted: Vec<Date>,
     compose: Option<Compose>,
+    /// An event being dragged or resized in the time grid.
+    pub(super) drag: Option<super::calendar_views::DragState>,
     _compose_subscription: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
     _ticker: Task<()>,
@@ -127,6 +129,7 @@ impl MainView {
             detail_scroll: ScrollHandle::new(),
             wanted: vec![],
             compose: None,
+            drag: None,
             _compose_subscription: None,
             _subscriptions: subs,
             _ticker: ticker,
