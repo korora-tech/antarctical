@@ -17,6 +17,7 @@ use super::text_input::{Submit, TextInput};
 use super::theme::{AMBER, CAPTION, MUTED, PANEL, SECONDARY, SELECTED_BORDER, TEXT};
 use super::widgets::{ButtonStyle, button};
 use crate::google::api::EventDraft;
+use crate::google::api::RemindersEdit;
 use crate::model::{Calendar, Event, When};
 use crate::quickadd::{self, DEFAULT_DURATION_MINUTES, Parsed};
 use crate::store::Store;
@@ -159,10 +160,126 @@ pub fn resolve(
             guests: parsed.guests,
             meet: parsed.meet,
             rrule: parsed.recurrence.map(|r| r.rrule),
+            edit_guests: None,
+            edit_reminders: None,
         },
         calendar,
         problem,
     })
+}
+
+/// The guests shown in the editor: everyone but you, the organiser and rooms.
+fn guest_emails(event: &Event) -> Vec<String> {
+    event
+        .attendees
+        .iter()
+        .filter(|a| !a.is_self && !a.organizer && a.resource != Some(true))
+        .map(|a| a.email.to_lowercase())
+        .collect()
+}
+
+/// Reads the editor's guests field: emails separated by commas, semicolons or spaces.
+fn parse_guests(text: &str) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = vec![];
+    for token in text
+        .split(|c: char| c == ',' || c == ';' || c.is_whitespace())
+        .filter(|t| !t.is_empty())
+    {
+        let valid = token.split_once('@').is_some_and(|(local, domain)| {
+            !local.is_empty() && domain.contains('.') && !domain.contains('@')
+        });
+        if !valid {
+            return Err(format!("\"{token}\" is not an email address"));
+        }
+        let email = token.to_lowercase();
+        if !out.contains(&email) {
+            out.push(email);
+        }
+    }
+    Ok(out)
+}
+
+fn same_emails(a: &[String], b: &[String]) -> bool {
+    let sorted = |v: &[String]| {
+        let mut v: Vec<String> = v.iter().map(|e| e.to_lowercase()).collect();
+        v.sort();
+        v.dedup();
+        v
+    };
+    sorted(a) == sorted(b)
+}
+
+fn same_minutes(a: &[i64], b: &[i64]) -> bool {
+    let sorted = |v: &[i64]| {
+        let mut v = v.to_vec();
+        v.sort();
+        v.dedup();
+        v
+    };
+    sorted(a) == sorted(b)
+}
+
+/// Reminders as the editor shows them: `10m, 1h, 1d`.
+fn reminders_to_text(minutes: &[i64]) -> String {
+    let mut sorted = minutes.to_vec();
+    sorted.sort();
+    sorted
+        .into_iter()
+        .map(|m| match m {
+            m if m > 0 && m % 10080 == 0 => format!("{}w", m / 10080),
+            m if m > 0 && m % 1440 == 0 => format!("{}d", m / 1440),
+            m if m > 0 && m % 60 == 0 => format!("{}h", m / 60),
+            m => format!("{m}m"),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The longest lead time Google accepts: four weeks.
+const MAX_REMINDER_MINUTES: i64 = 40_320;
+
+/// Reads the editor's reminders field: `10m, 1h, 1d` (a bare number is minutes), `default` for the
+/// calendar's own, or `none`.
+fn text_to_reminders(text: &str) -> Result<RemindersEdit, String> {
+    let text = text.trim().to_lowercase();
+    match text.as_str() {
+        "default" | "defaults" => return Ok(RemindersEdit::Defaults),
+        "" | "none" | "off" => return Ok(RemindersEdit::Custom(vec![])),
+        _ => {}
+    }
+    let mut out: Vec<i64> = vec![];
+    for token in text
+        .split(|c: char| c == ',' || c == ';' || c.is_whitespace())
+        .filter(|t| !t.is_empty())
+    {
+        let split = token
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(token.len());
+        let (digits, unit) = token.split_at(split);
+        let n: i64 = digits
+            .parse()
+            .map_err(|_| format!("\"{token}\" is not a reminder time; try 10m, 1h or 1d"))?;
+        let factor = match unit {
+            "" | "m" | "min" | "mins" => 1,
+            "h" | "hr" | "hrs" => 60,
+            "d" | "day" | "days" => 1440,
+            "w" | "wk" | "week" | "weeks" => 10080,
+            _ => {
+                return Err(format!(
+                    "\"{token}\" is not a reminder time; try 10m, 1h or 1d"
+                ));
+            }
+        };
+        let minutes = n * factor;
+        if minutes > MAX_REMINDER_MINUTES {
+            return Err("Reminders can be at most 4 weeks before the event".into());
+        }
+        if !out.contains(&minutes) {
+            out.push(minutes);
+        }
+    }
+    out.sort();
+    Ok(RemindersEdit::Custom(out))
 }
 
 /// The editor's "when" field: text that `quickadd::parse` reads back to the same time, or `None`
@@ -499,6 +616,15 @@ pub struct EditorView {
     title: Entity<TextInput>,
     when: Entity<TextInput>,
     location: Entity<TextInput>,
+    guests: Entity<TextInput>,
+    reminders: Entity<TextInput>,
+    /// Guests (lower-case emails) the event had when the editor opened.
+    original_guests: Vec<String>,
+    original_reminders: Vec<i64>,
+    /// Only the organiser can change who is invited.
+    can_edit_guests: bool,
+    /// Reminders are only offered on timed events.
+    can_edit_reminders: bool,
     /// The time cannot be written as text (multi-day or zero-length): leave it as it is.
     when_locked: bool,
     original_when: When,
@@ -516,6 +642,14 @@ impl EditorView {
         let title = cx.new(|cx| TextInput::new("Title", false, 1, cx));
         let when = cx.new(|cx| TextInput::new("tomorrow 2-3pm", false, 2, cx));
         let location = cx.new(|cx| TextInput::new("Location", false, 3, cx));
+        let guests = cx.new(|cx| TextInput::new("ann@example.com, bob@example.com", false, 4, cx));
+        let reminders = cx.new(|cx| TextInput::new("10m, 1h, 1d · default · none", false, 5, cx));
+        let original_guests = guest_emails(event);
+        let original_reminders = event.reminders.clone();
+        guests.update(cx, |i, cx| i.set_text(original_guests.join(", "), cx));
+        reminders.update(cx, |i, cx| {
+            i.set_text(reminders_to_text(&original_reminders), cx)
+        });
         title.update(cx, |i, cx| i.set_text(event.title.clone(), cx));
         when.update(cx, |i, cx| {
             i.set_text(when_text.clone().unwrap_or_default(), cx)
@@ -523,7 +657,7 @@ impl EditorView {
         location.update(cx, |i, cx| {
             i.set_text(event.location.clone().unwrap_or_default(), cx)
         });
-        let subs = [&title, &when, &location]
+        let subs = [&title, &when, &location, &guests, &reminders]
             .into_iter()
             .map(|e| cx.observe(e, |_, _, cx| cx.notify()))
             .collect();
@@ -534,6 +668,12 @@ impl EditorView {
             title,
             when,
             location,
+            guests,
+            reminders,
+            original_guests,
+            original_reminders,
+            can_edit_guests: event.user_organizes(),
+            can_edit_reminders: matches!(event.when, When::Timed { .. }),
             when_locked: when_text.is_none(),
             original_when: event.when,
             confirm_delete: false,
@@ -569,6 +709,47 @@ impl EditorView {
             }
         };
         let location = self.location.read(cx).text().trim().to_string();
+        let edit_guests = if self.can_edit_guests {
+            match parse_guests(self.guests.read(cx).text()) {
+                Ok(list) if same_emails(&list, &self.original_guests) => None,
+                Ok(list) => Some(list),
+                Err(e) => {
+                    self.error = Some(e);
+                    cx.notify();
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let defaults = self
+            .store
+            .read(cx)
+            .calendar(&self.calendar_id)
+            .map(|c| c.default_reminders.clone())
+            .unwrap_or_default();
+        let edit_reminders = if self.can_edit_reminders {
+            match text_to_reminders(self.reminders.read(cx).text()) {
+                Ok(RemindersEdit::Custom(list))
+                    if same_minutes(&list, &self.original_reminders) =>
+                {
+                    None
+                }
+                Ok(RemindersEdit::Defaults)
+                    if same_minutes(&defaults, &self.original_reminders) =>
+                {
+                    None
+                }
+                Ok(edit) => Some(edit),
+                Err(e) => {
+                    self.error = Some(e);
+                    cx.notify();
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         let draft = EventDraft {
             title,
             when,
@@ -578,6 +759,8 @@ impl EditorView {
             guests: vec![],
             meet: false,
             rrule: None,
+            edit_guests,
+            edit_reminders,
         };
         let (calendar_id, event_id) = (self.calendar_id.clone(), self.event_id.clone());
         let ok = self.store.update(cx, |store, cx| {
@@ -676,6 +859,8 @@ impl Render for EditorView {
                             guests: vec![],
                             meet: false,
                             rrule: None,
+                            edit_guests: None,
+                            edit_reminders: None,
                         },
                     );
                     (format::event_when_long(&ev, &tz, clock), SECONDARY)
@@ -729,6 +914,19 @@ impl Render for EditorView {
                         div().text_size(px(12.0)).text_color(rgb(color)).child(text)
                     }))
                     .child(field("Location", self.location.clone()))
+                    .child(if self.can_edit_guests {
+                        field("Guests", self.guests.clone()).into_any_element()
+                    } else {
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(rgb(MUTED))
+                            .child("Only the organiser can change who is invited.")
+                            .into_any_element()
+                    })
+                    .children(
+                        self.can_edit_reminders
+                            .then(|| field("Reminders", self.reminders.clone())),
+                    )
                     .children(
                         error.map(|e| div().text_size(px(12.0)).text_color(rgb(AMBER)).child(e)),
                     )
@@ -780,6 +978,46 @@ impl Render for EditorView {
 mod tests {
     use super::*;
     use jiff::civil::date;
+
+    #[test]
+    fn guests_are_read_as_a_list_of_emails() {
+        assert_eq!(
+            parse_guests("Ann@Example.com, bob@example.com; ann@example.com  cy@x.org"),
+            Ok(vec![
+                "ann@example.com".into(),
+                "bob@example.com".into(),
+                "cy@x.org".into()
+            ])
+        );
+        assert_eq!(parse_guests("  "), Ok(vec![]));
+        assert!(parse_guests("ann@example.com, bob").is_err());
+        assert!(parse_guests("@example.com").is_err());
+        assert!(parse_guests("a@b").is_err());
+    }
+
+    #[test]
+    fn reminders_round_trip_through_text() {
+        assert_eq!(
+            reminders_to_text(&[60, 10, 1440, 10080, 90]),
+            "10m, 1h, 90m, 1d, 1w"
+        );
+        assert_eq!(
+            text_to_reminders("10m, 1h 1d, 2w"),
+            Ok(RemindersEdit::Custom(vec![10, 60, 1440, 20160]))
+        );
+        assert_eq!(text_to_reminders("30"), Ok(RemindersEdit::Custom(vec![30])));
+        assert_eq!(text_to_reminders("Default"), Ok(RemindersEdit::Defaults));
+        assert_eq!(text_to_reminders("none"), Ok(RemindersEdit::Custom(vec![])));
+        assert_eq!(text_to_reminders(""), Ok(RemindersEdit::Custom(vec![])));
+        assert!(text_to_reminders("soon").is_err());
+        assert!(text_to_reminders("10x").is_err());
+        assert!(text_to_reminders("5w").is_err());
+        let shown = reminders_to_text(&[5, 60, 2880]);
+        assert_eq!(
+            text_to_reminders(&shown),
+            Ok(RemindersEdit::Custom(vec![5, 60, 2880]))
+        );
+    }
 
     fn now() -> Zoned {
         // No tz database in the Nix sandbox: build the zone from the constant.

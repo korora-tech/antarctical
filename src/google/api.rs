@@ -310,39 +310,12 @@ fn response_patch_body_from_attendees(
     let attendees: Vec<serde_json::Value> = attendees
         .iter()
         .map(|attendee| {
-            let mut fields = serde_json::Map::new();
-            fields.insert(
-                "email".into(),
-                serde_json::Value::String(attendee.email.clone()),
-            );
-            if let Some(name) = &attendee.display_name {
-                fields.insert(
-                    "displayName".into(),
-                    serde_json::Value::String(name.clone()),
-                );
-            }
-            if let Some(comment) = &attendee.comment {
-                fields.insert("comment".into(), serde_json::Value::String(comment.clone()));
-            }
-            if let Some(guests) = attendee.additional_guests {
-                fields.insert("additionalGuests".into(), serde_json::json!(guests));
-            }
-            if let Some(optional) = attendee.optional {
-                fields.insert("optional".into(), serde_json::json!(optional));
-            }
-            if let Some(resource) = attendee.resource {
-                fields.insert("resource".into(), serde_json::json!(resource));
-            }
             let status = if attendee.is_self {
                 response
             } else {
                 attendee.response
             };
-            fields.insert(
-                "responseStatus".into(),
-                serde_json::Value::String(google_response(status).into()),
-            );
-            serde_json::Value::Object(fields)
+            attendee_json(attendee, status)
         })
         .collect();
     Ok(serde_json::json!({"attendees": attendees}))
@@ -451,6 +424,20 @@ pub struct EventDraft {
     pub meet: bool,
     /// An `RRULE` body such as `FREQ=WEEKLY;BYDAY=MO` (create only).
     pub rrule: Option<String>,
+    /// Edit only: the guests the event should have, besides the organiser, you and any rooms.
+    /// `None` leaves the guest list alone. Existing guests keep their RSVPs.
+    pub edit_guests: Option<Vec<String>>,
+    /// Edit only: `None` leaves the reminders alone.
+    pub edit_reminders: Option<RemindersEdit>,
+}
+
+/// A change to an event's reminders.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RemindersEdit {
+    /// Use the calendar's default reminders.
+    Defaults,
+    /// Exactly these pop-up reminders, in minutes before the start (empty: none).
+    Custom(Vec<i64>),
 }
 
 const EVENT_FIELDS_ONE: &str = "id,status,summary,description,location,htmlLink,hangoutLink,\
@@ -532,7 +519,93 @@ fn patch_body(draft: &EventDraft) -> serde_json::Value {
     if let Some(d) = draft.description.as_deref() {
         body["description"] = nullable(d);
     }
+    match &draft.edit_reminders {
+        None => {}
+        Some(RemindersEdit::Defaults) => body["reminders"] = json!({ "useDefault": true }),
+        Some(RemindersEdit::Custom(minutes)) => {
+            body["reminders"] = json!({
+                "useDefault": false,
+                "overrides": minutes
+                    .iter()
+                    .map(|m| json!({ "method": "popup", "minutes": m }))
+                    .collect::<Vec<_>>(),
+            });
+        }
+    }
     body
+}
+
+/// One attendee as sent back to Google, keeping everything it told us about them.
+fn attendee_json(attendee: &Attendee, status: Response) -> serde_json::Value {
+    let mut fields = serde_json::Map::new();
+    fields.insert(
+        "email".into(),
+        serde_json::Value::String(attendee.email.clone()),
+    );
+    if let Some(name) = &attendee.display_name {
+        fields.insert(
+            "displayName".into(),
+            serde_json::Value::String(name.clone()),
+        );
+    }
+    if let Some(comment) = &attendee.comment {
+        fields.insert("comment".into(), serde_json::Value::String(comment.clone()));
+    }
+    if let Some(guests) = attendee.additional_guests {
+        fields.insert("additionalGuests".into(), serde_json::json!(guests));
+    }
+    if let Some(optional) = attendee.optional {
+        fields.insert("optional".into(), serde_json::json!(optional));
+    }
+    if let Some(resource) = attendee.resource {
+        fields.insert("resource".into(), serde_json::json!(resource));
+    }
+    fields.insert(
+        "responseStatus".into(),
+        serde_json::Value::String(google_response(status).into()),
+    );
+    serde_json::Value::Object(fields)
+}
+
+/// The attendee array for an edit that makes `wanted` the guest list. The organiser, you and
+/// rooms always stay; everyone already invited keeps their RSVP; new addresses are added with no
+/// response. `None` when nothing would change.
+fn merged_attendees(
+    current: &[Attendee],
+    wanted: &[String],
+) -> Result<Option<Vec<serde_json::Value>>, ApiError> {
+    if current.iter().any(|a| a.email.is_empty()) {
+        return Err(ApiError::InvalidRequest(
+            "a guest has no email address to preserve".into(),
+        ));
+    }
+    let wanted: Vec<String> = wanted.iter().map(|e| e.trim().to_lowercase()).collect();
+    let keeps = |a: &Attendee| {
+        a.organizer
+            || a.is_self
+            || a.resource == Some(true)
+            || wanted.contains(&a.email.to_lowercase())
+    };
+    let mut out: Vec<serde_json::Value> = current
+        .iter()
+        .filter(|a| keeps(a))
+        .map(|a| attendee_json(a, a.response))
+        .collect();
+    let removed = out.len() != current.len();
+    let mut added = false;
+    for email in &wanted {
+        let known = current.iter().any(|a| a.email.to_lowercase() == *email)
+            || out.iter().any(|v| {
+                v["email"]
+                    .as_str()
+                    .is_some_and(|e| e.to_lowercase() == *email)
+            });
+        if !known && !email.is_empty() {
+            out.push(serde_json::json!({ "email": email }));
+            added = true;
+        }
+    }
+    Ok((removed || added).then_some(out))
 }
 
 fn random_request_id() -> String {
@@ -551,6 +624,7 @@ fn send_write(
     url: &url::Url,
     token: &str,
     body: Option<&serde_json::Value>,
+    if_match: Option<&str>,
 ) -> Result<String, ApiError> {
     let auth = format!("Bearer {token}");
     let mut resp = match (method, body) {
@@ -558,10 +632,13 @@ fn send_write(
             .post(url.as_str())
             .header("Authorization", &auth)
             .send_json(b),
-        ("PATCH", Some(b)) => agent
-            .patch(url.as_str())
-            .header("Authorization", &auth)
-            .send_json(b),
+        ("PATCH", Some(b)) => {
+            let request = agent.patch(url.as_str()).header("Authorization", &auth);
+            match if_match {
+                Some(etag) => request.header("If-Match", etag).send_json(b),
+                None => request.send_json(b),
+            }
+        }
         ("DELETE", None) => agent
             .delete(url.as_str())
             .header("Authorization", &auth)
@@ -625,7 +702,7 @@ fn create_event_at(
         }
     }
     let body = insert_body(draft, &random_request_id());
-    let text = send_write(agent, "POST", &url, token, Some(&body))?;
+    let text = send_write(agent, "POST", &url, token, Some(&body), None)?;
     parse_written(&text, calendar)
 }
 
@@ -648,10 +725,45 @@ fn update_event_at(
     draft: &EventDraft,
     api_base: &str,
 ) -> Result<Event, ApiError> {
+    let mut body = patch_body(draft);
+    let mut etag = None;
+    if let Some(wanted) = &draft.edit_guests {
+        // Merge into what Google holds now, not what we loaded earlier, and refuse to overwrite
+        // if someone changes the event in between.
+        let mut get_url = event_url(api_base, &calendar.remote_id, event_id);
+        get_url
+            .query_pairs_mut()
+            .append_pair("fields", ATTENDEE_FIELDS);
+        let current: EventAttendees = get(agent, &get_url, token)?;
+        if current.attendees_omitted {
+            return Err(ApiError::InvalidRequest(
+                "this event has too many guests to edit here; use Google Calendar".into(),
+            ));
+        }
+        let attendees: Vec<Attendee> = current
+            .attendees
+            .into_iter()
+            .map(WireAttendee::into_model)
+            .collect();
+        if let Some(merged) = merged_attendees(&attendees, wanted)? {
+            body["attendees"] = serde_json::Value::Array(merged);
+            etag = Some(current.etag.ok_or_else(|| {
+                ApiError::InvalidRequest(
+                    "Google did not provide an event version; guests were not changed".into(),
+                )
+            })?);
+        }
+    }
     let mut url = event_url(api_base, &calendar.remote_id, event_id);
-    url.query_pairs_mut()
-        .append_pair("fields", EVENT_FIELDS_ONE);
-    let text = send_write(agent, "PATCH", &url, token, Some(&patch_body(draft)))?;
+    {
+        let mut q = url.query_pairs_mut();
+        q.append_pair("fields", EVENT_FIELDS_ONE);
+        // New guests are emailed an invitation (and removed ones told), as in Google's own UI.
+        if etag.is_some() {
+            q.append_pair("sendUpdates", "all");
+        }
+    }
+    let text = send_write(agent, "PATCH", &url, token, Some(&body), etag.as_deref())?;
     parse_written(&text, calendar)
 }
 
@@ -673,7 +785,7 @@ fn delete_event_at(
     api_base: &str,
 ) -> Result<(), ApiError> {
     let url = event_url(api_base, &calendar.remote_id, event_id);
-    match send_write(agent, "DELETE", &url, token, None) {
+    match send_write(agent, "DELETE", &url, token, None, None) {
         Ok(_) | Err(ApiError::NotFound) => Ok(()),
         Err(e) => Err(e),
     }
@@ -1398,6 +1510,8 @@ mod tests {
             guests: vec![],
             meet: false,
             rrule: None,
+            edit_guests: None,
+            edit_reminders: None,
         }
     }
 
@@ -1452,6 +1566,98 @@ mod tests {
         }
     }
 
+    fn guest(email: &str, response: Response) -> Attendee {
+        Attendee {
+            name: email.into(),
+            email: email.into(),
+            display_name: None,
+            comment: None,
+            additional_guests: None,
+            optional: None,
+            resource: None,
+            response,
+            organizer: false,
+            is_self: false,
+        }
+    }
+
+    #[test]
+    fn guest_edits_keep_rsvps_the_organiser_you_and_rooms() {
+        let mut organiser = guest("boss@example.com", Response::Accepted);
+        organiser.organizer = true;
+        let mut me = guest("me@example.com", Response::Tentative);
+        me.is_self = true;
+        let mut room = guest("room@resource.calendar.google.com", Response::Accepted);
+        room.resource = Some(true);
+        let current = vec![
+            organiser,
+            me,
+            room,
+            guest("ann@example.com", Response::Accepted),
+            guest("bob@example.com", Response::Declined),
+        ];
+        // Keep Ann, drop Bob, add Cy (case does not matter).
+        let merged = merged_attendees(
+            &current,
+            &["Ann@Example.com".into(), "cy@example.com".into()],
+        )
+        .unwrap()
+        .unwrap();
+        let emails: Vec<&str> = merged
+            .iter()
+            .map(|v| v["email"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            emails,
+            [
+                "boss@example.com",
+                "me@example.com",
+                "room@resource.calendar.google.com",
+                "ann@example.com",
+                "cy@example.com"
+            ]
+        );
+        assert_eq!(merged[1]["responseStatus"], "tentative");
+        assert_eq!(merged[3]["responseStatus"], "accepted");
+        // A new guest carries no response, so Google marks them as needing one.
+        assert!(merged[4].get("responseStatus").is_none());
+        // Nothing to do when the list already matches.
+        assert_eq!(
+            merged_attendees(
+                &current,
+                &["ann@example.com".into(), "bob@example.com".into()]
+            )
+            .unwrap(),
+            None
+        );
+        // Removing everyone keeps the organiser, you and rooms.
+        assert_eq!(merged_attendees(&current, &[]).unwrap().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn reminder_edits_are_patched_only_when_asked() {
+        let mut d = draft();
+        assert!(patch_body(&d).get("reminders").is_none());
+        d.edit_reminders = Some(RemindersEdit::Defaults);
+        assert_eq!(
+            patch_body(&d)["reminders"],
+            serde_json::json!({"useDefault": true})
+        );
+        d.edit_reminders = Some(RemindersEdit::Custom(vec![10, 60]));
+        assert_eq!(
+            patch_body(&d)["reminders"],
+            serde_json::json!({"useDefault": false, "overrides": [
+                {"method": "popup", "minutes": 10},
+                {"method": "popup", "minutes": 60}
+            ]})
+        );
+        d.edit_reminders = Some(RemindersEdit::Custom(vec![]));
+        assert_eq!(
+            patch_body(&d)["reminders"],
+            serde_json::json!({"useDefault": false, "overrides": []})
+        );
+    }
+
     #[test]
     fn create_update_and_delete_round_trip_against_a_mock() {
         use std::io::{Read, Write};
@@ -1497,12 +1703,20 @@ mod tests {
         let server = thread::spawn(move || {
             let create = serve(&listener, "200 OK", stored);
             let update = serve(&listener, "200 OK", stored);
+            let current = serve(
+                &listener,
+                "200 OK",
+                r#"{"etag":"\"e1\"","attendees":[
+                    {"email":"boss@example.com","organizer":true,"responseStatus":"accepted"},
+                    {"email":"bob@example.com","responseStatus":"declined"}]}"#,
+            );
+            let guests = serve(&listener, "200 OK", stored);
             let delete = serve(
                 &listener,
                 "410 Gone",
                 r#"{"error":{"message":"Resource has been deleted"}}"#,
             );
-            (create, update, delete)
+            (create, update, current, guests, delete)
         });
 
         let mut d = draft();
@@ -1513,9 +1727,27 @@ mod tests {
         assert_eq!(created.title, "Lunch");
         let updated = update_event_at(&agent(), "tok", &cal(), "new1", &d, &base).unwrap();
         assert_eq!(updated.id, "new1");
+        let mut edit = draft();
+        edit.edit_guests = Some(vec!["cy@example.com".into()]);
+        update_event_at(&agent(), "tok", &cal(), "new1", &edit, &base).unwrap();
         delete_event_at(&agent(), "tok", &cal(), "new1", &base).unwrap();
 
-        let (create, update, delete) = server.join().unwrap();
+        let (create, update, current, guests, delete) = server.join().unwrap();
+        assert!(current.starts_with("GET /calendar/v3/calendars/"));
+        assert!(guests.starts_with("PATCH /calendar/v3/calendars/"));
+        assert!(guests.contains("sendUpdates=all"));
+        assert!(guests.to_ascii_lowercase().contains("if-match: \"e1\""));
+        // Bob goes, Cy comes, the organiser stays; the new guest has no response yet.
+        let body: serde_json::Value =
+            serde_json::from_str(guests.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        let emails: Vec<&str> = body["attendees"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["email"].as_str().unwrap())
+            .collect();
+        assert_eq!(emails, ["boss@example.com", "cy@example.com"]);
+        assert!(!update.contains("sendUpdates"));
         let first = create.lines().next().unwrap();
         assert!(first.starts_with("POST /calendar/v3/calendars/"), "{first}");
         assert!(first.contains("conferenceDataVersion=1"));

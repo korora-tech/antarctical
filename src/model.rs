@@ -161,6 +161,12 @@ impl Event {
     /// Returns the start and exclusive end as instants in `tz`.
     ///
     /// All-day dates are converted to local midnight; zero-length timed events keep equal bounds.
+    /// Whether the user runs this event: it has no guests, or they are its organiser. Others'
+    /// invitations cannot be rescheduled or have their guests changed from here.
+    pub fn user_organizes(&self) -> bool {
+        self.attendees.is_empty() || self.attendees.iter().any(|a| a.is_self && a.organizer)
+    }
+
     pub fn instants(&self, tz: &TimeZone) -> TimeSpan {
         match self.when {
             When::Timed { start, end } => TimeSpan {

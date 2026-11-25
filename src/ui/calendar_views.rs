@@ -154,9 +154,7 @@ impl MainView {
     /// be edited, that the user organises (or that has no guests).
     fn draggable_block(&self, store: &Store, e: &Event, tz: &TimeZone) -> Option<Block> {
         let account = &store.calendar(&e.calendar_id)?.account;
-        let organiser =
-            e.attendees.is_empty() || e.attendees.iter().any(|a| a.is_self && a.organizer);
-        (store.can_edit(account) && !store.is_pending_event(&e.id) && organiser)
+        (store.can_edit(account) && !store.is_pending_event(&e.id) && e.user_organizes())
             .then(|| drag::block_of(e, tz))
             .flatten()
     }
@@ -312,6 +310,8 @@ impl MainView {
                 guests: vec![],
                 meet: false,
                 rrule: None,
+                edit_guests: None,
+                edit_reminders: None,
             };
             if !store.update_event(&calendar, &event_id, draft) {
                 store.notice = Some((

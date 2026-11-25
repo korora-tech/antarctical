@@ -9,7 +9,7 @@ use jiff::civil::Date;
 use jiff::tz::TimeZone;
 
 use crate::config::Prefs;
-use crate::google::api::EventDraft;
+use crate::google::api::{EventDraft, RemindersEdit};
 use crate::model;
 use crate::model::{Attendee, Calendar, Event, Response, When};
 use crate::sync::{AuthState, Command, SyncEvent, SyncHandle, WriteFailure};
@@ -39,6 +39,50 @@ enum WriteKind {
         event: Event,
     },
     Delete(Event),
+}
+
+/// Shows an edit's guest and reminder changes locally, as Google will store them.
+fn apply_guest_and_reminder_edits(event: &mut Event, draft: &EventDraft, calendar: &Calendar) {
+    if let Some(wanted) = &draft.edit_guests {
+        let wanted: Vec<String> = wanted.iter().map(|e| e.trim().to_lowercase()).collect();
+        event.attendees.retain(|a| {
+            a.organizer
+                || a.is_self
+                || a.resource == Some(true)
+                || wanted.contains(&a.email.to_lowercase())
+        });
+        for email in wanted {
+            if !email.is_empty()
+                && !event
+                    .attendees
+                    .iter()
+                    .any(|a| a.email.to_lowercase() == email)
+            {
+                event.attendees.push(Attendee {
+                    name: email.clone(),
+                    email,
+                    display_name: None,
+                    comment: None,
+                    additional_guests: None,
+                    optional: None,
+                    resource: None,
+                    response: Response::NeedsAction,
+                    organizer: false,
+                    is_self: false,
+                });
+            }
+        }
+    }
+    match &draft.edit_reminders {
+        None => {}
+        Some(RemindersEdit::Defaults) => {
+            event.reminders = match event.when {
+                When::Timed { .. } => calendar.default_reminders.clone(),
+                When::AllDay { .. } => vec![],
+            }
+        }
+        Some(RemindersEdit::Custom(minutes)) => event.reminders = minutes.clone(),
+    }
 }
 
 /// Prefix of the temporary ids given to events that Google has not confirmed yet.
@@ -385,6 +429,7 @@ impl Store {
         if let Some(description) = &draft.description {
             event.description = Some(description.clone()).filter(|d| !d.is_empty());
         }
+        apply_guest_and_reminder_edits(&mut event, &draft, calendar);
         let ticket = self.ticket();
         self.insert_event(event.clone());
         self.pending_writes.insert(
@@ -1290,7 +1335,66 @@ mod tests {
             guests: vec![],
             meet: false,
             rrule: None,
+            edit_guests: None,
+            edit_reminders: None,
         }
+    }
+
+    #[test]
+    fn editing_guests_and_reminders_shows_at_once() {
+        let (mut s, rx) = store_with_rx();
+        let m = date(2026, 10, 1);
+        let mut event = all_day("a", "e1", date(2026, 10, 21), date(2026, 10, 22));
+        event.when = When::Timed {
+            start: "2026-10-21T10:00:00Z".parse().unwrap(),
+            end: "2026-10-21T11:00:00Z".parse().unwrap(),
+        };
+        event.reminders = vec![10];
+        event.attendees = vec![
+            Attendee {
+                name: "Ann".into(),
+                email: "ann@x".into(),
+                display_name: None,
+                comment: None,
+                additional_guests: None,
+                optional: None,
+                resource: None,
+                response: Response::Accepted,
+                organizer: false,
+                is_self: false,
+            },
+            Attendee {
+                name: "Me".into(),
+                email: "me@x".into(),
+                display_name: None,
+                comment: None,
+                additional_guests: None,
+                optional: None,
+                resource: None,
+                response: Response::Accepted,
+                organizer: true,
+                is_self: true,
+            },
+        ];
+        s.apply(SyncEvent::Month {
+            calendar_id: "a".into(),
+            month: m,
+            events: vec![event.clone()],
+        });
+        let cal = s.calendar("a").cloned().unwrap();
+        let mut d = draft("e1");
+        d.when = event.when;
+        d.edit_guests = Some(vec!["bob@x".into()]);
+        d.edit_reminders = Some(RemindersEdit::Custom(vec![5, 60]));
+        s.prefs.rsvp_accounts.insert("me@x".into());
+        assert!(s.update_event(&cal, "e1", d));
+        let shown = &s.chunks["a"][&m][0];
+        let emails: Vec<&str> = shown.attendees.iter().map(|a| a.email.as_str()).collect();
+        // Ann is dropped, Bob added, and you stay.
+        assert_eq!(emails, ["me@x", "bob@x"]);
+        assert_eq!(shown.attendees[1].response, Response::NeedsAction);
+        assert_eq!(shown.reminders, vec![5, 60]);
+        drop(rx);
     }
 
     fn month_titles(s: &Store) -> Vec<String> {
