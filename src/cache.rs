@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use crate::model::{Calendar, Event};
 
 /// Bumped whenever the stored shape changes; other versions are ignored (and overwritten).
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -148,6 +148,7 @@ mod tests {
             primary: true,
             default_reminders: vec![10],
             selected_upstream: true,
+            writable: true,
         };
         let event = Event {
             id: "e1".into(),

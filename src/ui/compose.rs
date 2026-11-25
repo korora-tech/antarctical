@@ -46,6 +46,8 @@ pub enum Problem {
     EmptyTitle,
     /// The account has not turned on editing (the events scope).
     EditingOff(String),
+    /// The calendar is read-only for you (a holiday calendar, a shared calendar you can only view).
+    ReadOnly(String),
     /// Recurrence needs an IANA zone name, which this machine did not report.
     NoZoneName,
 }
@@ -56,6 +58,9 @@ impl Problem {
             Problem::EmptyTitle => "Type a title".into(),
             Problem::EditingOff(account) => {
                 format!("Editing is off for {account}. Turn it on in Settings to add events.")
+            }
+            Problem::ReadOnly(name) => {
+                format!("{name} is read-only for you. Pick another calendar with /name.")
             }
             Problem::NoZoneName => {
                 "Repeating events need a named time zone, and this system did not report one."
@@ -102,7 +107,7 @@ pub fn pick_calendar<'a>(
     if let Some(h) = hint.map(str::to_lowercase).filter(|h| !h.is_empty())
         && let Some(c) = calendars
             .iter()
-            .filter(|c| can_edit(&c.account))
+            .filter(|c| can_edit(&c.account) && c.writable)
             .chain(calendars.iter())
             .find(|c| c.name.to_lowercase().contains(&h))
     {
@@ -116,11 +121,12 @@ pub fn pick_calendar<'a>(
         .iter()
         .find(|a| can_edit(a))
         .or_else(|| accts.first())?;
-    calendars
-        .iter()
-        .filter(|c| c.account == *account)
-        .find(|c| c.primary)
-        .or_else(|| calendars.iter().find(|c| c.account == *account))
+    let of_account = || calendars.iter().filter(|c| c.account == *account);
+    of_account()
+        .find(|c| c.primary && c.writable)
+        .or_else(|| of_account().find(|c| c.writable))
+        .or_else(|| of_account().find(|c| c.primary))
+        .or_else(|| of_account().next())
 }
 
 /// Turns parsed text into a draft and its target calendar.
@@ -145,6 +151,8 @@ pub fn resolve(
         Some(Problem::EmptyTitle)
     } else if !can_edit(&calendar.account) {
         Some(Problem::EditingOff(calendar.account.clone()))
+    } else if !calendar.writable {
+        Some(Problem::ReadOnly(calendar.name.clone()))
     } else if parsed.recurrence.is_some() && tz_name.is_none() {
         Some(Problem::NoZoneName)
     } else {
@@ -767,7 +775,7 @@ impl EditorView {
             let Some(calendar) = store.calendar(&calendar_id).cloned() else {
                 return false;
             };
-            if !store.can_edit(&calendar.account) {
+            if !store.can_write(&calendar) {
                 return false;
             }
             let ok = store.update_event(&calendar, &event_id, draft);
@@ -796,7 +804,7 @@ impl EditorView {
             let Some(calendar) = store.calendar(&calendar_id).cloned() else {
                 return false;
             };
-            if !store.can_edit(&calendar.account) {
+            if !store.can_write(&calendar) {
                 return false;
             }
             let ok = store.delete_event(&calendar, &event_id);
@@ -1037,6 +1045,7 @@ mod tests {
             primary,
             default_reminders: vec![10],
             selected_upstream: true,
+            writable: true,
         }
     }
 
@@ -1071,6 +1080,30 @@ mod tests {
             pick_calendar(&c, &accounts(), None, none).unwrap().name,
             "Personal"
         );
+    }
+
+    #[test]
+    fn read_only_calendars_are_not_picked_by_default_and_are_flagged_when_named() {
+        let mut c = cals();
+        // Personal (the primary) is read-only: the default moves to the account's writable one.
+        c[0].writable = false;
+        let all = |_: &str| true;
+        assert_eq!(
+            pick_calendar(&c, &accounts(), None, all).unwrap().name,
+            "Family"
+        );
+        // Naming it anyway gets it, and resolve says why it cannot be used.
+        let now = now();
+        let parsed = quickadd::parse("Lunch tomorrow 1pm /personal", &now);
+        let r = resolve(parsed, now.date(), &now, &c, &accounts(), all).unwrap();
+        assert_eq!(r.calendar.name, "Personal");
+        assert_eq!(r.problem, Some(Problem::ReadOnly("Personal".into())));
+        // A name that matches a writable calendar wins over a read-only one.
+        c[1].name = "Personal 2".into();
+        let parsed = quickadd::parse("Lunch tomorrow 1pm /personal", &now);
+        let r = resolve(parsed, now.date(), &now, &c, &accounts(), all).unwrap();
+        assert_eq!(r.calendar.name, "Personal 2");
+        assert_eq!(r.problem, None);
     }
 
     #[test]

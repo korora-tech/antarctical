@@ -305,6 +305,12 @@ impl Store {
         self.mode == Mode::Demo || self.prefs.rsvp_accounts.contains(account)
     }
 
+    /// Whether events on this calendar can be added or changed: the account has editing on and
+    /// the calendar is not read-only (a holiday calendar, someone's shared "see all details").
+    pub fn can_write(&self, calendar: &Calendar) -> bool {
+        calendar.writable && self.can_edit(&calendar.account)
+    }
+
     /// Whether an event is still waiting for Google to confirm it (and so cannot be edited).
     pub fn is_pending_event(&self, event_id: &str) -> bool {
         event_id.starts_with(PENDING_ID_PREFIX)
@@ -923,6 +929,7 @@ mod tests {
                 primary: true,
                 default_reminders: vec![],
                 selected_upstream: true,
+                writable: true,
             },
             Calendar {
                 id: "b".into(),
@@ -933,6 +940,7 @@ mod tests {
                 primary: false,
                 default_reminders: vec![],
                 selected_upstream: false,
+                writable: true,
             },
         ]));
         (s, rx)
@@ -1124,6 +1132,7 @@ mod tests {
             primary: false,
             default_reminders: vec![],
             selected_upstream: true,
+            writable: true,
         };
         s.apply(SyncEvent::Calendars(vec![shared("me@x"), shared("work@x")]));
         for account in ["me@x", "work@x"] {
@@ -1184,6 +1193,7 @@ mod tests {
             primary: false,
             default_reminders: vec![],
             selected_upstream: true,
+            writable: true,
         };
         s.apply(SyncEvent::Calendars(vec![shared("me@x"), shared("work@x")]));
         for (account, response) in [("me@x", Response::Declined), ("work@x", Response::Accepted)] {
@@ -1228,6 +1238,7 @@ mod tests {
             primary: false,
             default_reminders: vec![],
             selected_upstream: true,
+            writable: true,
         }]));
         assert!(!s.is_visible(&s.calendars[0]));
         assert!(!s.prefs.calendar_visibility.contains_key("team@group"));
@@ -1395,6 +1406,16 @@ mod tests {
         assert_eq!(shown.attendees[1].response, Response::NeedsAction);
         assert_eq!(shown.reminders, vec![5, 60]);
         drop(rx);
+    }
+
+    #[test]
+    fn read_only_calendars_cannot_be_written_even_when_editing_is_on() {
+        let mut s = store();
+        s.prefs.rsvp_accounts.insert("me@x".into());
+        let mut cal = s.calendar("a").cloned().unwrap();
+        assert!(s.can_write(&cal));
+        cal.writable = false;
+        assert!(!s.can_write(&cal));
     }
 
     fn month_titles(s: &Store) -> Vec<String> {

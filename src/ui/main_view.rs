@@ -221,16 +221,21 @@ impl MainView {
         let Some(event) = store.find_event(&cal_id, &ev_id).cloned() else {
             return;
         };
-        let editable = store
-            .calendar(&cal_id)
-            .is_some_and(|c| store.can_edit(&c.account));
+        let calendar = store.calendar(&cal_id).cloned();
+        let editable = calendar.as_ref().is_some_and(|c| store.can_write(c));
+        let read_only = calendar.as_ref().is_some_and(|c| !c.writable);
         if store.is_pending_event(&ev_id) {
             return;
         }
         if !editable {
             self.store.update(cx, |store, cx| {
                 store.notice = Some((
-                    "Editing is off for this account. Turn it on in Settings.".into(),
+                    if read_only {
+                        "This calendar is read-only for you."
+                    } else {
+                        "Editing is off for this account. Turn it on in Settings."
+                    }
+                    .into(),
                     std::time::Instant::now(),
                 ));
                 cx.notify();
@@ -1004,7 +1009,7 @@ impl MainView {
         let can_edit_event = !store.is_pending_event(&event.id)
             && store
                 .calendar(&event.calendar_id)
-                .is_some_and(|c| store.can_edit(&c.account));
+                .is_some_and(|c| store.can_write(c));
         if can_edit_event {
             sections.push(
                 div().flex().child(

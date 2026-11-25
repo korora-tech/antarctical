@@ -15,7 +15,7 @@ const BASE: &str = "https://www.googleapis.com/calendar/v3";
 const BODY_LIMIT: u64 = 32 * 1024 * 1024;
 
 const CALENDAR_FIELDS: &str = concat!(
-    "items(id,summary,summaryOverride,backgroundColor,primary,selected,hidden,defaultReminders),",
+    "items(id,summary,summaryOverride,backgroundColor,primary,selected,hidden,defaultReminders,accessRole),",
     "nextPageToken",
 );
 const EVENT_FIELDS: &str = "items(id,status,summary,description,location,htmlLink,hangoutLink,\
@@ -827,6 +827,8 @@ struct CalendarListEntry {
     hidden: bool,
     #[serde(default)]
     default_reminders: Vec<Reminder>,
+    /// `owner` and `writer` can change events; `reader` and `freeBusyReader` cannot.
+    access_role: Option<String>,
 }
 
 impl CalendarListEntry {
@@ -849,6 +851,11 @@ impl CalendarListEntry {
             primary: self.primary,
             default_reminders: popup_minutes(&self.default_reminders),
             selected_upstream: self.selected || self.primary,
+            // An absent role is assumed writable; a refused write rolls back with Google's message.
+            writable: self
+                .access_role
+                .as_deref()
+                .is_none_or(|r| matches!(r, "owner" | "writer")),
             remote_id: self.id,
         })
     }
@@ -1142,6 +1149,7 @@ mod tests {
             primary: true,
             default_reminders: vec![10],
             selected_upstream: true,
+            writable: true,
         }
     }
 
@@ -1456,6 +1464,28 @@ mod tests {
             primary_calendar_id(items).as_deref(),
             Some("me@example.com")
         );
+    }
+
+    #[test]
+    fn only_owners_and_writers_can_write_to_a_calendar() {
+        let r: CalendarListResponse = serde_json::from_str(
+            r##"{"items":[
+            {"id":"a","accessRole":"owner"},
+            {"id":"b","accessRole":"writer"},
+            {"id":"c","accessRole":"reader"},
+            {"id":"d","accessRole":"freeBusyReader"},
+            {"id":"e"}
+            ]}"##,
+        )
+        .unwrap();
+        let writable: Vec<bool> = r
+            .items
+            .into_iter()
+            .filter_map(|c| c.into_model("me@x"))
+            .map(|c| c.writable)
+            .collect();
+        assert_eq!(writable, [true, true, false, false, true]);
+        assert!(CALENDAR_FIELDS.contains("accessRole"));
     }
 
     #[test]
