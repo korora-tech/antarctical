@@ -1,0 +1,99 @@
+# Antarctical for Noctalia: your next meeting in the bar, and launcher search.
+#
+# The calendar itself is Noctalia's own: `antarctical vdir` mirrors Antarctical's calendars
+# into a directory that a `type = "vdir"` account under [calendar] reads, which fills the
+# control center's Calendar tab. This plugin adds what that tab does not have.
+#
+# Antarctical owns the Google sign-in and the sync. One [[service]] follows it by running
+# `antarctical events --watch` and republishes each agenda on the "antarctical.agenda"
+# state channel; the other entries only read that channel and run `antarctical`
+# subcommands for actions.
+#
+# bar     -> the current or next event today, with a Join button near its start; a click
+#            opens the control center's Calendar tab
+# search  -> launcher provider that finds upcoming events
+# service -> the only entry that reads the event stream
+
+id = "korora-tech/antarctical"
+name = "Antarctical"
+version = "1.0.0"
+plugin_api = 43
+author = "korora-tech"
+license = "Apache-2.0"
+dependencies = ["antarctical", "xdg-open"]
+tags = ["bar", "launcher", "productivity", "utility"]
+icon = "calendar-event"
+description = "Your next Antarctical meeting in the bar, with a Join button, and launcher search for upcoming events."
+
+# Plugin-level settings are seeded into every entry: the service reads `command` and
+# `days`, the bar and the launcher read `command` and `join_lead_minutes`.
+
+[[setting]]
+key = "days"
+type = "int"
+label_key = "settings.days.label"
+description_key = "settings.days.description"
+default = 7
+min = 1
+max = 31
+
+[[setting]]
+key = "join_lead_minutes"
+type = "int"
+label_key = "settings.join_lead_minutes.label"
+description_key = "settings.join_lead_minutes.description"
+default = 5
+min = 0
+max = 30
+
+[[setting]]
+key = "command"
+type = "string"
+label_key = "settings.command.label"
+description_key = "settings.command.description"
+default = "antarctical"
+advanced = true
+
+[[widget]]
+id = "bar"
+entry = "bar.luau"
+
+  # The agenda lives in Noctalia's own calendar; right click opens Antarctical itself.
+  [widget.actions]
+  left = "panel-toggle control-center calendar"
+
+  [[widget.setting]]
+  key = "show_title"
+  type = "bool"
+  label_key = "settings.show_title.label"
+  description_key = "settings.show_title.description"
+  default = true
+
+  [[widget.setting]]
+  key = "title_width"
+  type = "int"
+  label_key = "settings.title_width.label"
+  description_key = "settings.title_width.description"
+  default = 220
+  min = 60
+  max = 480
+  step = 10
+  visible_when = { key = "show_title", values = ["true"] }
+
+  [[widget.setting]]
+  key = "hide_when_idle"
+  type = "bool"
+  label_key = "settings.hide_when_idle.label"
+  description_key = "settings.hide_when_idle.description"
+  default = false
+
+[[launcher_provider]]
+id = "search"
+entry = "search.luau"
+prefix = "cal"
+glyph = "calendar-event"
+include_in_global_search = false
+
+[[service]]
+id = "service"
+entry = "service.luau"

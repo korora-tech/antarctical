@@ -83,8 +83,10 @@ import Page from "../layouts/Page.astro";
     Antarctical exchanges data only with Google, over encrypted connections, to sign
     you in and to read or change your calendars. We do not receive, store or share
     your Google data. On your own computer, Antarctical shows desktop notifications
-    for reminders and, if you use the Dux desktop shell, makes your events available
-    to it over a local socket on your computer.
+    for reminders and makes your events available to desktop shells and to its own
+    command-line tools over a local socket on your computer. If you run
+    <code>antarctical vdir</code>, it also writes them as calendar files to the
+    directory you choose, readable only by your user account.
   </p>
 
   <h2>Google API Services User Data Policy</h2>

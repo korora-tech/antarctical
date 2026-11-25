@@ -91,20 +91,9 @@
           };
         };
 
-        # The Dux bar widget: link or copy to ~/.config/dms/plugins/antarcticalNextEvent
-        # (the Home Manager module does this with `dux.enable`). Clicking it runs this flake's
-        # Antarctical by store path, so it works whatever dms.service's PATH is.
-        dux-plugin = pkgs.runCommand "antarctical-dux-plugin" {
-          meta.license = pkgs.lib.licenses.asl20;
-        } ''
-          mkdir -p $out
-          cp ${./LICENSE} $out/LICENSE
-          cp ${./dux-plugin/plugin.json} $out/plugin.json
-          substitute ${./dux-plugin/NextEvent.qml} $out/NextEvent.qml \
-            --replace-fail "@antarctical@" "${
-              pkgs.lib.getExe self.packages.${pkgs.stdenv.hostPlatform.system}.default
-            }"
-        '';
+        noctalia-plugin = pkgs.callPackage ./nix/noctalia-plugin.nix {
+          antarctical = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+        };
       });
 
       homeModules = {
@@ -132,18 +121,20 @@
                 type = lib.types.attrsOf (lib.types.attrsOf lib.types.anything);
                 default = { };
               };
+              xdg.dataHome = lib.mkOption {
+                type = lib.types.str;
+                default = "/home/me/.local/share";
+              };
+              xdg.dataFile = lib.mkOption {
+                type = lib.types.attrsOf (lib.types.attrsOf lib.types.anything);
+                default = { };
+              };
             };
           };
           duxStub = {
             options.programs.dank-material-shell = {
               settings = lib.mkOption {
                 type = lib.types.attrsOf lib.types.anything;
-                default = { };
-              };
-              plugins = lib.mkOption {
-                type = lib.types.attrsOf (
-                  lib.types.submodule { options.src = lib.mkOption { type = lib.types.package; }; }
-                );
                 default = { };
               };
             };
@@ -169,6 +160,11 @@
           withDux = eval [ duxStub ] all;
           withDuxBackend = eval [ duxStub ] (lib.recursiveUpdate all { dux.setCalendarBackend = true; });
           withoutDux = eval [ ] all;
+          withNoctalia = eval [ ] {
+            enable = true;
+            noctalia.enable = true;
+            vdir.enable = true;
+          };
           noService = eval [ ] {
             enable = true;
             dux.enable = true;
@@ -182,10 +178,6 @@
             ) "service runs antarctical --hidden")
             (lib.assertMsg ((unit withDux).Service.Restart == "always") "service takes over after a hand-off")
             (lib.assertMsg ((unit withDux).Unit.Before == [ "dms.service" ]) "service starts before Dux")
-            (lib.assertMsg (
-              withDux.programs.dank-material-shell.plugins.antarcticalNextEvent.src.outPath
-              == self.packages.${system}.dux-plugin.outPath
-            ) "Dux gets the widget")
             (lib.assertMsg (
               withDux.programs.dank-material-shell.settings == { }
             ) "Dux settings.json is left alone by default")
@@ -202,6 +194,17 @@
             (lib.assertMsg (
               withoutDux.home.packages == [ self.packages.${system}.default ]
             ) "installs the package")
+            (lib.assertMsg (
+              withoutDux.xdg.dataFile == { } && !(withoutDux.systemd.user.services ? antarctical-vdir)
+            ) "the Noctalia plugin and the vdir mirror are opt-in")
+            (lib.assertMsg (
+              withNoctalia.xdg.dataFile."noctalia/plugins/antarctical".source.outPath
+              == self.packages.${system}.noctalia-plugin.outPath
+            ) "Noctalia finds the plugin in its local plugin directory")
+            (lib.assertMsg (
+              withNoctalia.systemd.user.services.antarctical-vdir.Service.ExecStart
+              == "${lib.getExe self.packages.${system}.default} vdir /home/me/.local/share/antarctical/calendars"
+            ) "the vdir mirror writes under the data directory")
           ];
         in
         {

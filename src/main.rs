@@ -2,6 +2,7 @@
 
 mod branding;
 mod cache;
+mod cli;
 mod config;
 mod dankcal;
 mod demo;
@@ -16,6 +17,7 @@ mod store;
 mod sync;
 mod tray;
 mod ui;
+mod vdir;
 mod zones;
 
 use std::cell::{Cell, RefCell};
@@ -40,13 +42,18 @@ const USAGE: &str = "usage: antarctical [--demo] [--hidden]
   --hidden   start in the tray without opening the window
 
 Only one Antarctical runs at a time: launching it again shows the running one's window
-(a second --hidden launch does nothing). --demo runs alongside, without the Dux socket.
+(a second --hidden launch does nothing). --demo runs alongside, without the socket.
 
 Environment: ANTARCTICAL_DEMO=1 is the same as --demo. DANKCAL_SOCKET overrides where the
-socket for the Dux shell is created (default $XDG_RUNTIME_DIR/dankcal-<pid>.sock).";
+socket for desktop shells and the subcommands below is created (default
+$XDG_RUNTIME_DIR/dankcal-<pid>.sock).";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Subcommands talk to the running instance and never start the app.
+    if let Some(status) = cli::run(&args) {
+        std::process::exit(status.into());
+    }
     let mut demo = std::env::var_os("ANTARCTICAL_DEMO").is_some_and(|v| v == "1");
     let mut hidden = false;
     for arg in &args {
@@ -54,7 +61,7 @@ fn main() {
             "--demo" => demo = true,
             "--hidden" => hidden = true,
             "-h" | "--help" => {
-                println!("{USAGE}");
+                println!("{USAGE}\n\n{}", cli::USAGE);
                 return;
             }
             "-V" | "--version" => {
@@ -62,21 +69,24 @@ fn main() {
                 return;
             }
             other => {
-                eprintln!("antarctical: unknown argument {other}\n{USAGE}");
+                eprintln!(
+                    "antarctical: unknown argument {other}\n{USAGE}\n\n{}",
+                    cli::USAGE
+                );
                 std::process::exit(2);
             }
         }
     }
 
     // Before anything else (the keyring, a sign-in): either another Antarctical takes over,
-    // or this one owns the socket Dux reads. Demo mode stays out of both: it must not feed
-    // generated events to Dux or stand in for the real app.
+    // or this one owns the socket desktop shells read. Demo mode stays out of both: it must
+    // not feed generated events to a shell or stand in for the real app.
     let listener = match (!demo).then(|| dankcal::claim(!hidden)) {
         None => None,
         Some(dankcal::Claim::Bound(l)) => Some(l),
         Some(dankcal::Claim::HandedOff) => return,
         Some(dankcal::Claim::Unavailable(why)) => {
-            eprintln!("antarctical: no dankcal socket for Dux ({why})");
+            eprintln!("antarctical: no socket for desktop shells ({why})");
             None
         }
     };
@@ -177,13 +187,16 @@ fn main() {
                 .detach();
             }
 
-            // The Dux socket serves what the store holds; its clients can ask for the window.
+            // The socket serves what the store holds; its clients can ask for the window.
             {
                 let store = store.clone();
                 cx.spawn(async move |cx| {
                     while let Ok(action) = shell_rx.recv().await {
                         cx.update(|cx| match action {
                             ShellAction::Show => ui::windows::show_main_window(&store, cx),
+                            ShellAction::ShowAt(date) => {
+                                ui::windows::show_main_window_at(&store, date, cx)
+                            }
                         });
                     }
                 })
@@ -296,7 +309,7 @@ impl TrayPush {
     }
 }
 
-/// Publishes the store to the Dux socket. A sync delivers one month of one calendar at a time,
+/// Publishes the store to the socket. A sync delivers one month of one calendar at a time,
 /// so publishing waits for the burst to settle; pushes are only sent when something changed.
 struct ShellPush {
     server: dankcal::Server,
