@@ -16,6 +16,7 @@ mod store;
 mod sync;
 mod tray;
 mod ui;
+mod zones;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;

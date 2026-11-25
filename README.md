@@ -18,6 +18,7 @@ A native Google Calendar viewer for Linux, built with Rust and [GPUI](https://ww
 - **Multiple Google accounts:** bring calendars together and hide or show each one from the sidebar.
 - **Four views:** month, week, day and agenda, with keyboard shortcuts and a mini calendar for navigation.
 - **A fixed penguin tray icon:** open a compact calendar and agenda. The icon never shows a date badge.
+- **Extra time zones:** Settings → Preferences → Extra time zones (up to two IANA names such as `Asia/Tokyo`) adds columns of local hours beside the week and day views.
 - **Desktop reminders:** use Google Calendar's popup reminders. Hidden calendars and declined events never notify. Notifications have **Join** (when the event has a video call) and **Snooze 5 min** buttons, if your notification server shows actions (GNOME and KDE do).
 - **Meeting details:** see guests, location and description, join a video call, or open the event in Google Calendar.
 - **Invitation replies:** opt in per account to answer invitations with Yes, No or Maybe; replies update only that event occurrence.
@@ -130,6 +131,7 @@ bun run build
 | `src/ui/` | GPUI calendar views, event details, settings and tray window |
 | `src/google/`, `src/secrets.rs`, `src/sync.rs` | Google API, OAuth, keyring storage and sync |
 | `src/demo.rs` | Generated demo calendars and events |
+| `src/zones.rs` | Extra time zone parsing and gutter labels |
 | `src/tray.rs`, `src/reminders.rs`, `src/dankcal.rs` | Desktop tray, notifications and Dux socket |
 | `data/branding/`, `src/branding.rs` | Shared penguin artwork and embedded app assets |
 | `dux-plugin/`, `nix/hm-module.nix` | Dux widget and Home Manager module |

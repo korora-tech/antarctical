@@ -84,6 +84,8 @@ const RESIZE_GRIP: f32 = 6.0;
 const MONTH_ROW_H: f32 = 19.0;
 const DAY_MINUTES: i32 = 24 * 60;
 const GUTTER_W: f32 = 56.0;
+/// Width of one secondary time zone column beside the gutter.
+const ZONE_W: f32 = 44.0;
 /// Right inset shared by hour labels and the all-day label.
 const GUTTER_PAD: f32 = 8.0;
 
@@ -642,6 +644,17 @@ impl MainView {
         let today = now.date();
         let clock = store.prefs.clock_24h;
         let dates: Vec<Date> = (0..days).map(|i| model::add_days(first, i)).collect();
+        let zones: Vec<(String, TimeZone)> = store
+            .prefs
+            .secondary_zones
+            .iter()
+            .take(crate::zones::MAX_ZONES)
+            .filter_map(|name| {
+                let zone = crate::zones::lookup(name)?;
+                Some((crate::zones::zone_label(name, &zone, first), zone))
+            })
+            .collect();
+        let gutter_w = GUTTER_W + ZONE_W * zones.len() as f32;
         let preview: Option<Event> = self.drag.as_ref().and_then(|state| {
             let mut event = store
                 .find_event(&state.event.calendar_id, &state.event.event_id)?
@@ -677,7 +690,24 @@ impl MainView {
             .flex()
             .border_b_1()
             .border_color(rgb(BORDER))
-            .child(div().w(px(GUTTER_W)).flex_shrink_0())
+            .child(
+                div()
+                    .w(px(gutter_w))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_end()
+                    .pb(px(6.0))
+                    .children(zones.iter().map(|(label, _)| {
+                        div()
+                            .w(px(ZONE_W))
+                            .pr(px(GUTTER_PAD))
+                            .flex()
+                            .justify_end()
+                            .text_size(px(10.0))
+                            .text_color(rgb(CAPTION))
+                            .child(SharedString::from(label.clone()))
+                    })),
+            )
             .children(dates.iter().map(|&d| {
                 let is_today = d == today;
                 let is_past = d < today;
@@ -783,7 +813,7 @@ impl MainView {
                 .border_color(rgb(BORDER))
                 .child(
                     div()
-                        .w(px(GUTTER_W))
+                        .w(px(gutter_w))
                         .flex_shrink_0()
                         .pt(px(4.0))
                         .pr(px(GUTTER_PAD))
@@ -836,6 +866,42 @@ impl MainView {
                 }))
         });
 
+        let zone_gutters: Vec<Div> = zones
+            .iter()
+            .map(|(_, zone)| {
+                div()
+                    .w(px(ZONE_W))
+                    .flex_shrink_0()
+                    .relative()
+                    .children((1..24).map(|h| {
+                        let (num, suffix) =
+                            crate::zones::hour_label(h as i8, first, &tz, zone, clock);
+                        div()
+                            .absolute()
+                            .top(px(h as f32 * HOUR_PX - HOUR_LABEL_LINE_H / 2.0))
+                            .right(px(GUTTER_PAD))
+                            .flex()
+                            .items_baseline()
+                            .line_height(px(HOUR_LABEL_LINE_H))
+                            .text_color(rgb(CAPTION))
+                            .child(
+                                div()
+                                    .text_size(px(10.0))
+                                    .font_features(tabular())
+                                    .child(num),
+                            )
+                            .when_some(suffix, |el, s| {
+                                el.child(
+                                    div()
+                                        .ml(px(2.0))
+                                        .text_size(px(9.0))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(s),
+                                )
+                            })
+                    }))
+            })
+            .collect();
         let gutter = div()
             .w(px(GUTTER_W))
             .flex_shrink_0()
@@ -1287,7 +1353,7 @@ impl MainView {
                     .on_drag_move(
                         cx.listener(move |this, ev: &DragMoveEvent<EventDrag>, _, cx| {
                             let column_w =
-                                (f32::from(ev.bounds.size.width) - GUTTER_W) / days as f32;
+                                (f32::from(ev.bounds.size.width) - gutter_w) / days as f32;
                             this.drag_to(
                                 ev.drag(cx).clone(),
                                 ev.event.position,
@@ -1314,6 +1380,7 @@ impl MainView {
                             .h(px(24.0 * HOUR_PX))
                             .w_full()
                             .flex()
+                            .children(zone_gutters)
                             .child(gutter)
                             .child(columns),
                     ),
