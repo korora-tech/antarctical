@@ -9,9 +9,10 @@ use jiff::civil::Date;
 use jiff::tz::TimeZone;
 
 use crate::config::Prefs;
+use crate::google::api::EventDraft;
 use crate::model;
-use crate::model::{Calendar, Event, Response};
-use crate::sync::{AuthState, Command, SyncEvent, SyncHandle};
+use crate::model::{Attendee, Calendar, Event, Response, When};
+use crate::sync::{AuthState, Command, SyncEvent, SyncHandle, WriteFailure};
 
 /// The account data source represented by a [`Store`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,6 +22,27 @@ pub enum Mode {
     /// Generated local sample calendars and events.
     Demo,
 }
+
+/// An event write that has been applied to the UI but not yet confirmed by Google.
+struct PendingWrite {
+    calendar_id: String,
+    kind: WriteKind,
+}
+
+// Held in a map, one per in-flight write; the size difference does not matter.
+#[allow(clippy::large_enum_variant)]
+enum WriteKind {
+    /// The optimistic copy, under a temporary id.
+    Create(Event),
+    Update {
+        previous: Event,
+        event: Event,
+    },
+    Delete(Event),
+}
+
+/// Prefix of the temporary ids given to events that Google has not confirmed yet.
+const PENDING_ID_PREFIX: &str = "pending-";
 
 /// Shared UI state assembled from sync-worker events.
 pub struct Store {
@@ -52,6 +74,8 @@ pub struct Store {
     /// User preferences applied to the current UI state.
     pub prefs: Prefs,
     pending_replies: HashMap<(String, String), (Response, Response)>,
+    pending_writes: HashMap<u64, PendingWrite>,
+    next_ticket: u64,
 }
 
 impl Store {
@@ -75,6 +99,8 @@ impl Store {
             notice: None,
             prefs,
             pending_replies: HashMap::new(),
+            pending_writes: HashMap::new(),
+            next_ticket: 1,
         }
     }
 
@@ -145,6 +171,261 @@ impl Store {
         }
         self.pending_replies.insert(key, (previous, response));
         true
+    }
+
+    // ----- event writes ---------------------------------------------------------------------
+
+    /// Whether this account may create, edit and delete events (the events scope is granted).
+    pub fn can_edit(&self, account: &str) -> bool {
+        self.mode == Mode::Demo || self.prefs.rsvp_accounts.contains(account)
+    }
+
+    /// Whether an event is still waiting for Google to confirm it (and so cannot be edited).
+    pub fn is_pending_event(&self, event_id: &str) -> bool {
+        event_id.starts_with(PENDING_ID_PREFIX)
+    }
+
+    /// The loaded copy of an event.
+    pub fn find_event(&self, calendar_id: &str, event_id: &str) -> Option<&Event> {
+        self.chunks
+            .get(calendar_id)?
+            .values()
+            .flatten()
+            .find(|e| e.id == event_id)
+    }
+
+    fn ticket(&mut self) -> u64 {
+        let t = self.next_ticket;
+        self.next_ticket += 1;
+        t
+    }
+
+    /// The event as the UI would show it for `draft`: used for the optimistic copy and for
+    /// previews while typing.
+    pub fn event_from_draft(calendar: &Calendar, id: String, draft: &EventDraft) -> Event {
+        Event {
+            id,
+            calendar_id: calendar.id.clone(),
+            title: draft.title.clone(),
+            when: draft.when,
+            color: None,
+            location: draft.location.clone().filter(|l| !l.is_empty()),
+            description: draft.description.clone().filter(|d| !d.is_empty()),
+            html_link: None,
+            meet_link: None,
+            organizer: None,
+            attendees: draft
+                .guests
+                .iter()
+                .map(|email| Attendee {
+                    name: email.clone(),
+                    email: email.clone(),
+                    display_name: None,
+                    comment: None,
+                    additional_guests: None,
+                    optional: None,
+                    resource: None,
+                    response: Response::NeedsAction,
+                    organizer: false,
+                    is_self: false,
+                })
+                .collect(),
+            reminders: match draft.when {
+                When::Timed { .. } => calendar.default_reminders.clone(),
+                When::AllDay { .. } => vec![],
+            },
+            tentative: false,
+        }
+    }
+
+    /// Removes every loaded copy of an event; returns one of them.
+    fn remove_event(&mut self, calendar_id: &str, event_id: &str) -> Option<Event> {
+        let mut found = None;
+        if let Some(months) = self.chunks.get_mut(calendar_id) {
+            for events in months.values_mut() {
+                if let Some(i) = events.iter().position(|e| e.id == event_id) {
+                    let e = events.remove(i);
+                    found.get_or_insert(e);
+                }
+            }
+        }
+        found
+    }
+
+    /// Puts an event into every loaded month chunk it belongs in, replacing any copy.
+    fn insert_event(&mut self, event: Event) {
+        let tz = TimeZone::system();
+        let Some(months) = self.chunks.get_mut(&event.calendar_id) else {
+            return;
+        };
+        for (month, events) in months.iter_mut() {
+            events.retain(|e| e.id != event.id);
+            if event.in_month(*month, &tz) {
+                events.push(event.clone());
+            }
+        }
+    }
+
+    /// Creates an event: it appears at once under a temporary id and is swapped for Google's
+    /// copy (or removed, with a message) when the write finishes.
+    pub fn create_event(&mut self, calendar: &Calendar, draft: EventDraft) {
+        let ticket = self.ticket();
+        let event =
+            Self::event_from_draft(calendar, format!("{PENDING_ID_PREFIX}{ticket}"), &draft);
+        self.insert_event(event.clone());
+        self.pending_writes.insert(
+            ticket,
+            PendingWrite {
+                calendar_id: calendar.id.clone(),
+                kind: WriteKind::Create(event),
+            },
+        );
+        self.send(Command::CreateEvent {
+            ticket,
+            calendar: calendar.clone(),
+            draft: Box::new(draft),
+        });
+    }
+
+    /// Edits an event in place. Returns false when the event is unknown or already has a write
+    /// in flight.
+    pub fn update_event(&mut self, calendar: &Calendar, event_id: &str, draft: EventDraft) -> bool {
+        if self.is_pending_event(event_id) || self.write_in_flight(&calendar.id, event_id) {
+            return false;
+        }
+        let Some(previous) = self.find_event(&calendar.id, event_id).cloned() else {
+            return false;
+        };
+        let mut event = previous.clone();
+        event.title = draft.title.clone();
+        event.when = draft.when;
+        event.location = draft.location.clone().filter(|l| !l.is_empty());
+        event.description = draft.description.clone().filter(|d| !d.is_empty());
+        let ticket = self.ticket();
+        self.insert_event(event.clone());
+        self.pending_writes.insert(
+            ticket,
+            PendingWrite {
+                calendar_id: calendar.id.clone(),
+                kind: WriteKind::Update { previous, event },
+            },
+        );
+        self.send(Command::UpdateEvent {
+            ticket,
+            calendar: calendar.clone(),
+            event_id: event_id.to_string(),
+            draft: Box::new(draft),
+        });
+        true
+    }
+
+    /// Deletes an event from the UI at once. Returns false when it is unknown or busy.
+    pub fn delete_event(&mut self, calendar: &Calendar, event_id: &str) -> bool {
+        if self.is_pending_event(event_id) || self.write_in_flight(&calendar.id, event_id) {
+            return false;
+        }
+        let Some(event) = self.remove_event(&calendar.id, event_id) else {
+            return false;
+        };
+        let ticket = self.ticket();
+        self.pending_writes.insert(
+            ticket,
+            PendingWrite {
+                calendar_id: calendar.id.clone(),
+                kind: WriteKind::Delete(event),
+            },
+        );
+        self.send(Command::DeleteEvent {
+            ticket,
+            calendar: calendar.clone(),
+            event_id: event_id.to_string(),
+        });
+        true
+    }
+
+    fn write_in_flight(&self, calendar_id: &str, event_id: &str) -> bool {
+        self.pending_writes.values().any(|w| {
+            w.calendar_id == calendar_id
+                && match &w.kind {
+                    WriteKind::Create(e) => e.id == event_id,
+                    WriteKind::Update { event, .. } => event.id == event_id,
+                    WriteKind::Delete(e) => e.id == event_id,
+                }
+        })
+    }
+
+    fn finish_write(
+        &mut self,
+        ticket: u64,
+        account: String,
+        result: Result<Option<Box<Event>>, WriteFailure>,
+    ) {
+        let Some(write) = self.pending_writes.remove(&ticket) else {
+            return;
+        };
+        let cal = write.calendar_id;
+        let what = match &write.kind {
+            WriteKind::Create(_) => "create the event",
+            WriteKind::Update { .. } => "save the event",
+            WriteKind::Delete(_) => "delete the event",
+        };
+        match (write.kind, result) {
+            (WriteKind::Create(temp), Ok(Some(real))) => {
+                self.remove_event(&cal, &temp.id);
+                self.insert_event(*real);
+            }
+            (WriteKind::Update { previous, .. }, Ok(Some(real))) => {
+                self.remove_event(&cal, &previous.id);
+                self.insert_event(*real);
+            }
+            (_, Ok(_)) => {}
+            (kind, Err(failure)) => {
+                match kind {
+                    WriteKind::Create(temp) => {
+                        self.remove_event(&cal, &temp.id);
+                    }
+                    WriteKind::Update { previous, .. } => self.insert_event(previous),
+                    WriteKind::Delete(event) => self.insert_event(event),
+                }
+                self.problem = Some(if failure.missing_scope {
+                    format!(
+                        "Could not {what}: {}. Sign in again to allow editing.",
+                        failure.message
+                    )
+                } else {
+                    format!("Could not {what}: {}", failure.message)
+                });
+                if failure.missing_scope {
+                    self.rsvp_reauth = Some(account);
+                }
+            }
+        }
+    }
+
+    /// Re-applies unconfirmed writes to a freshly fetched month so a background refresh does
+    /// not make them flicker away.
+    fn overlay_pending(&self, calendar_id: &str, month: Date, events: &mut Vec<Event>) {
+        let tz = TimeZone::system();
+        for w in self
+            .pending_writes
+            .values()
+            .filter(|w| w.calendar_id == calendar_id)
+        {
+            match &w.kind {
+                WriteKind::Create(e) => {
+                    if e.in_month(month, &tz) {
+                        events.push(e.clone());
+                    }
+                }
+                WriteKind::Update { previous, event } => {
+                    events.retain(|e| e.id != previous.id);
+                    if event.in_month(month, &tz) {
+                        events.push(event.clone());
+                    }
+                }
+                WriteKind::Delete(e) => events.retain(|x| x.id != e.id),
+            }
+        }
     }
 
     fn finish_reply(
@@ -238,7 +519,7 @@ impl Store {
                 month,
                 events,
             } => {
-                let events: Vec<Event> = events
+                let mut events: Vec<Event> = events
                     .into_iter()
                     .map(|mut event| {
                         let key = (calendar_id.clone(), event.id.clone());
@@ -252,6 +533,7 @@ impl Store {
                         event
                     })
                     .collect();
+                self.overlay_pending(&calendar_id, month, &mut events);
                 self.chunks
                     .entry(calendar_id)
                     .or_default()
@@ -279,6 +561,11 @@ impl Store {
                     self.prefs.save();
                 }
             }
+            SyncEvent::WriteFinished {
+                ticket,
+                account,
+                result,
+            } => self.finish_write(ticket, account, result),
             SyncEvent::ReplyFinished {
                 calendar_id,
                 event_id,
@@ -477,7 +764,11 @@ mod tests {
     use jiff::civil::date;
 
     fn store() -> Store {
-        let (tx, _rx) = std::sync::mpsc::channel();
+        store_with_rx().0
+    }
+
+    fn store_with_rx() -> (Store, std::sync::mpsc::Receiver<Command>) {
+        let (tx, rx) = std::sync::mpsc::channel();
         // Ephemeral: tests must never write the user's settings.json.
         let prefs = Prefs {
             ephemeral: true,
@@ -506,7 +797,7 @@ mod tests {
                 selected_upstream: false,
             },
         ]));
-        s
+        (s, rx)
     }
 
     fn all_day(cal: &str, id: &str, start: Date, end: Date) -> Event {
@@ -834,5 +1125,208 @@ mod tests {
         );
 
         assert_eq!(s.rsvp_reauth.as_deref(), Some("first@example.com"));
+    }
+
+    fn draft(title: &str) -> EventDraft {
+        EventDraft {
+            title: title.into(),
+            when: When::AllDay {
+                start: date(2026, 10, 21),
+                end: date(2026, 10, 22),
+            },
+            time_zone: None,
+            location: None,
+            description: None,
+            guests: vec![],
+            meet: false,
+            rrule: None,
+        }
+    }
+
+    fn month_titles(s: &Store) -> Vec<String> {
+        let mut v: Vec<String> = s.chunks["a"][&date(2026, 10, 1)]
+            .iter()
+            .map(|e| e.id.clone())
+            .collect();
+        v.sort();
+        v
+    }
+
+    fn with_one_event() -> (Store, std::sync::mpsc::Receiver<Command>, Calendar) {
+        let (mut s, rx) = store_with_rx();
+        s.apply(SyncEvent::Month {
+            calendar_id: "a".into(),
+            month: date(2026, 10, 1),
+            events: vec![all_day("a", "old", date(2026, 10, 5), date(2026, 10, 6))],
+        });
+        let cal = s.calendar("a").unwrap().clone();
+        (s, rx, cal)
+    }
+
+    #[test]
+    fn created_event_appears_at_once_and_is_replaced_by_googles_copy() {
+        let (mut s, rx, cal) = with_one_event();
+        s.create_event(&cal, draft("Lunch"));
+        assert_eq!(month_titles(&s), vec!["old", "pending-1"]);
+        let Ok(Command::CreateEvent { ticket, draft, .. }) = rx.try_recv() else {
+            panic!("expected a create command")
+        };
+        assert_eq!(draft.title, "Lunch");
+
+        // A background refresh that predates the write must not make it flicker away.
+        s.apply(SyncEvent::Month {
+            calendar_id: "a".into(),
+            month: date(2026, 10, 1),
+            events: vec![all_day("a", "old", date(2026, 10, 5), date(2026, 10, 6))],
+        });
+        assert_eq!(month_titles(&s), vec!["old", "pending-1"]);
+
+        s.apply(SyncEvent::WriteFinished {
+            ticket,
+            account: "me@x".into(),
+            result: Ok(Some(Box::new(all_day(
+                "a",
+                "real",
+                date(2026, 10, 21),
+                date(2026, 10, 22),
+            )))),
+        });
+        assert_eq!(month_titles(&s), vec!["old", "real"]);
+        assert!(s.problem.is_none());
+    }
+
+    #[test]
+    fn failed_create_is_removed_with_a_message() {
+        let (mut s, rx, cal) = with_one_event();
+        s.create_event(&cal, draft("Lunch"));
+        let Ok(Command::CreateEvent { ticket, .. }) = rx.try_recv() else {
+            panic!()
+        };
+        s.apply(SyncEvent::WriteFinished {
+            ticket,
+            account: "me@x".into(),
+            result: Err(WriteFailure {
+                message: "boom".into(),
+                missing_scope: true,
+            }),
+        });
+        assert_eq!(month_titles(&s), vec!["old"]);
+        assert!(
+            s.problem
+                .as_deref()
+                .unwrap()
+                .contains("create the event: boom")
+        );
+        assert_eq!(s.rsvp_reauth.as_deref(), Some("me@x"));
+    }
+
+    #[test]
+    fn edit_applies_at_once_and_rolls_back_on_failure() {
+        let (mut s, rx, cal) = with_one_event();
+        assert!(s.update_event(&cal, "old", draft("Renamed")));
+        assert_eq!(s.find_event("a", "old").unwrap().title, "Renamed");
+        // One edit at a time per event.
+        assert!(!s.update_event(&cal, "old", draft("Again")));
+        let Ok(Command::UpdateEvent {
+            ticket, event_id, ..
+        }) = rx.try_recv()
+        else {
+            panic!()
+        };
+        assert_eq!(event_id, "old");
+        s.apply(SyncEvent::WriteFinished {
+            ticket,
+            account: "me@x".into(),
+            result: Err(WriteFailure {
+                message: "nope".into(),
+                missing_scope: false,
+            }),
+        });
+        assert_eq!(s.find_event("a", "old").unwrap().title, "old");
+        assert!(s.problem.as_deref().unwrap().contains("save the event"));
+    }
+
+    #[test]
+    fn edit_keeps_what_the_editor_does_not_touch() {
+        let (mut s, _rx, cal) = with_one_event();
+        s.update_event(&cal, "old", draft("Renamed"));
+        let e = s.find_event("a", "old").unwrap();
+        assert_eq!(e.title, "Renamed");
+        assert_eq!(
+            e.when,
+            When::AllDay {
+                start: date(2026, 10, 21),
+                end: date(2026, 10, 22)
+            }
+        );
+        assert!(
+            !s.chunks["a"][&date(2026, 10, 1)]
+                .iter()
+                .any(|e| e.id == "pending-1")
+        );
+    }
+
+    #[test]
+    fn delete_hides_at_once_survives_stale_refresh_and_restores_on_failure() {
+        let (mut s, rx, cal) = with_one_event();
+        assert!(s.delete_event(&cal, "old"));
+        assert!(s.find_event("a", "old").is_none());
+        s.apply(SyncEvent::Month {
+            calendar_id: "a".into(),
+            month: date(2026, 10, 1),
+            events: vec![all_day("a", "old", date(2026, 10, 5), date(2026, 10, 6))],
+        });
+        assert!(
+            s.find_event("a", "old").is_none(),
+            "stale refresh resurrected it"
+        );
+        let Ok(Command::DeleteEvent { ticket, .. }) = rx.try_recv() else {
+            panic!()
+        };
+        s.apply(SyncEvent::WriteFinished {
+            ticket,
+            account: "me@x".into(),
+            result: Err(WriteFailure {
+                message: "offline".into(),
+                missing_scope: false,
+            }),
+        });
+        assert!(s.find_event("a", "old").is_some());
+        assert!(s.problem.as_deref().unwrap().contains("delete the event"));
+    }
+
+    #[test]
+    fn events_still_waiting_for_google_cannot_be_edited() {
+        let (mut s, _rx, cal) = with_one_event();
+        s.create_event(&cal, draft("Lunch"));
+        assert!(s.is_pending_event("pending-1"));
+        assert!(!s.update_event(&cal, "pending-1", draft("x")));
+        assert!(!s.delete_event(&cal, "pending-1"));
+    }
+
+    #[test]
+    fn multi_month_events_land_in_every_loaded_month() {
+        let (mut s, _rx, cal) = with_one_event();
+        s.apply(SyncEvent::Month {
+            calendar_id: "a".into(),
+            month: date(2026, 11, 1),
+            events: vec![],
+        });
+        let mut d = draft("Trip");
+        d.when = When::AllDay {
+            start: date(2026, 10, 30),
+            end: date(2026, 11, 3),
+        };
+        s.create_event(&cal, d);
+        assert!(
+            s.chunks["a"][&date(2026, 10, 1)]
+                .iter()
+                .any(|e| e.id == "pending-1")
+        );
+        assert!(
+            s.chunks["a"][&date(2026, 11, 1)]
+                .iter()
+                .any(|e| e.id == "pending-1")
+        );
     }
 }

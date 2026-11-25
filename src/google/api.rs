@@ -53,7 +53,7 @@ impl fmt::Display for ApiError {
                 write!(f, "Google Calendar returned HTTP {status}: {body}")
             }
             ApiError::Decode(m) => write!(f, "Unexpected response from Google: {m}"),
-            ApiError::InvalidRequest(m) => write!(f, "Cannot update this invitation: {m}"),
+            ApiError::InvalidRequest(m) => write!(f, "Cannot complete this change: {m}"),
         }
     }
 }
@@ -431,6 +431,252 @@ fn patch_response_at(
         .read_to_string()
         .map_err(|e| ApiError::Network(e.to_string()))?;
     Err(http_error(status, &body))
+}
+
+// ----- event writes -------------------------------------------------------------------------
+
+/// A single event's fields as entered by the user, for create and edit.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EventDraft {
+    pub title: String,
+    pub when: When,
+    /// IANA zone name (e.g. `Europe/London`). Required by Google for recurring events.
+    pub time_zone: Option<String>,
+    pub location: Option<String>,
+    pub description: Option<String>,
+    /// Guest email addresses. Applied on create only; editing never rewrites the attendee list,
+    /// so existing RSVPs are preserved.
+    pub guests: Vec<String>,
+    /// Ask Google to attach a Meet link (create only).
+    pub meet: bool,
+    /// An `RRULE` body such as `FREQ=WEEKLY;BYDAY=MO` (create only).
+    pub rrule: Option<String>,
+}
+
+const EVENT_FIELDS_ONE: &str = "id,status,summary,description,location,htmlLink,hangoutLink,\
+    start,end,colorId,eventType,attendees(email,displayName,responseStatus,organizer,self),\
+    organizer(email,displayName,self),reminders,conferenceData(entryPoints(entryPointType,uri))";
+
+fn wire_when(when: &When, tz: Option<&str>) -> (serde_json::Value, serde_json::Value) {
+    use serde_json::json;
+    match when {
+        When::AllDay { start, end } => (
+            json!({ "date": start.to_string() }),
+            json!({ "date": end.to_string() }),
+        ),
+        When::Timed { start, end } => {
+            let wrap = |t: &Timestamp| {
+                let mut v = json!({ "dateTime": t.to_string() });
+                if let Some(tz) = tz {
+                    v["timeZone"] = json!(tz);
+                }
+                v
+            };
+            (wrap(start), wrap(end))
+        }
+    }
+}
+
+/// The JSON body for `events.insert`. `request_id` makes Meet creation idempotent.
+fn insert_body(draft: &EventDraft, request_id: &str) -> serde_json::Value {
+    use serde_json::json;
+    let (start, end) = wire_when(&draft.when, draft.time_zone.as_deref());
+    let mut body = json!({
+        "summary": draft.title,
+        "start": start,
+        "end": end,
+    });
+    if let Some(l) = draft.location.as_deref().filter(|l| !l.is_empty()) {
+        body["location"] = json!(l);
+    }
+    if let Some(d) = draft.description.as_deref().filter(|d| !d.is_empty()) {
+        body["description"] = json!(d);
+    }
+    if !draft.guests.is_empty() {
+        body["attendees"] = draft.guests.iter().map(|e| json!({ "email": e })).collect();
+    }
+    if let Some(r) = &draft.rrule {
+        body["recurrence"] = json!([format!("RRULE:{r}")]);
+    }
+    if draft.meet {
+        body["conferenceData"] = json!({
+            "createRequest": {
+                "requestId": request_id,
+                "conferenceSolutionKey": { "type": "hangoutsMeet" },
+            }
+        });
+    }
+    body
+}
+
+/// The JSON body for `events.patch`: only fields an edit can change. Title, time and location
+/// are always sent (an empty location clears it). The description is sent only when `Some`
+/// (`Some("")` clears it), because the loaded copy is flattened text and writing it back would
+/// destroy Google's formatting. Attendees, recurrence and conference data are never sent.
+fn patch_body(draft: &EventDraft) -> serde_json::Value {
+    use serde_json::json;
+    let (start, end) = wire_when(&draft.when, draft.time_zone.as_deref());
+    let nullable = |v: &str| {
+        if v.is_empty() {
+            serde_json::Value::Null
+        } else {
+            json!(v)
+        }
+    };
+    let mut body = json!({
+        "summary": draft.title,
+        "start": start,
+        "end": end,
+        "location": nullable(draft.location.as_deref().unwrap_or("")),
+    });
+    if let Some(d) = draft.description.as_deref() {
+        body["description"] = nullable(d);
+    }
+    body
+}
+
+fn random_request_id() -> String {
+    let mut buf = [0u8; 12];
+    // A fixed id is still valid, only not unique; Google just uses it to deduplicate retries.
+    if getrandom::fill(&mut buf).is_err() {
+        buf = [7; 12];
+    }
+    buf.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Sends a JSON request and returns the response body of a 2xx, or the mapped error.
+fn send_write(
+    agent: &ureq::Agent,
+    method: &str,
+    url: &url::Url,
+    token: &str,
+    body: Option<&serde_json::Value>,
+) -> Result<String, ApiError> {
+    let auth = format!("Bearer {token}");
+    let mut resp = match (method, body) {
+        ("POST", Some(b)) => agent
+            .post(url.as_str())
+            .header("Authorization", &auth)
+            .send_json(b),
+        ("PATCH", Some(b)) => agent
+            .patch(url.as_str())
+            .header("Authorization", &auth)
+            .send_json(b),
+        ("DELETE", None) => agent
+            .delete(url.as_str())
+            .header("Authorization", &auth)
+            .call(),
+        _ => return Err(ApiError::InvalidRequest("unsupported write".into())),
+    }
+    .map_err(|e| ApiError::Network(e.to_string()))?;
+    let status = resp.status().as_u16();
+    let text = resp
+        .body_mut()
+        .with_config()
+        .limit(BODY_LIMIT)
+        .read_to_string()
+        .map_err(|e| ApiError::Network(e.to_string()))?;
+    if (200..300).contains(&status) {
+        Ok(text)
+    } else {
+        Err(http_error(status, &text))
+    }
+}
+
+fn parse_written(body: &str, calendar: &Calendar) -> Result<Event, ApiError> {
+    let wire: WireEvent =
+        serde_json::from_str(body).map_err(|e| ApiError::Decode(e.to_string()))?;
+    wire.into_model(calendar)
+        .ok_or_else(|| ApiError::Decode("Google returned an event the app cannot display".into()))
+}
+
+/// Creates an event and returns it as Google stored it.
+pub fn create_event(
+    agent: &ureq::Agent,
+    token: &str,
+    calendar: &Calendar,
+    draft: &EventDraft,
+) -> Result<Event, ApiError> {
+    create_event_at(agent, token, calendar, draft, BASE)
+}
+
+fn create_event_at(
+    agent: &ureq::Agent,
+    token: &str,
+    calendar: &Calendar,
+    draft: &EventDraft,
+    api_base: &str,
+) -> Result<Event, ApiError> {
+    let mut url = url::Url::parse(api_base).expect("the Calendar API base is a valid URL");
+    url.path_segments_mut()
+        .expect("the API base has no query or fragment, so its path segments are mutable")
+        .push("calendars")
+        .push(&calendar.remote_id)
+        .push("events");
+    {
+        let mut q = url.query_pairs_mut();
+        q.append_pair("fields", EVENT_FIELDS_ONE);
+        if draft.meet {
+            q.append_pair("conferenceDataVersion", "1");
+        }
+        // Inviting people emails them; only do it when the user typed guests.
+        if !draft.guests.is_empty() {
+            q.append_pair("sendUpdates", "all");
+        }
+    }
+    let body = insert_body(draft, &random_request_id());
+    let text = send_write(agent, "POST", &url, token, Some(&body))?;
+    parse_written(&text, calendar)
+}
+
+/// Edits one event (or, for a recurring series, one occurrence) and returns the result.
+pub fn update_event(
+    agent: &ureq::Agent,
+    token: &str,
+    calendar: &Calendar,
+    event_id: &str,
+    draft: &EventDraft,
+) -> Result<Event, ApiError> {
+    update_event_at(agent, token, calendar, event_id, draft, BASE)
+}
+
+fn update_event_at(
+    agent: &ureq::Agent,
+    token: &str,
+    calendar: &Calendar,
+    event_id: &str,
+    draft: &EventDraft,
+    api_base: &str,
+) -> Result<Event, ApiError> {
+    let mut url = event_url(api_base, &calendar.remote_id, event_id);
+    url.query_pairs_mut()
+        .append_pair("fields", EVENT_FIELDS_ONE);
+    let text = send_write(agent, "PATCH", &url, token, Some(&patch_body(draft)))?;
+    parse_written(&text, calendar)
+}
+
+/// Deletes an event (one occurrence for a recurring instance id). Already gone counts as done.
+pub fn delete_event(
+    agent: &ureq::Agent,
+    token: &str,
+    calendar: &Calendar,
+    event_id: &str,
+) -> Result<(), ApiError> {
+    delete_event_at(agent, token, calendar, event_id, BASE)
+}
+
+fn delete_event_at(
+    agent: &ureq::Agent,
+    token: &str,
+    calendar: &Calendar,
+    event_id: &str,
+    api_base: &str,
+) -> Result<(), ApiError> {
+    let url = event_url(api_base, &calendar.remote_id, event_id);
+    match send_write(agent, "DELETE", &url, token, None) {
+        Ok(_) | Err(ApiError::NotFound) => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 fn event_url(api_base: &str, calendar_id: &str, event_id: &str) -> url::Url {
@@ -1137,5 +1383,156 @@ mod tests {
         );
         assert_eq!(html_to_text("<ul><li>a</li><li>b</li></ul>"), "• a\n• b");
         assert_eq!(html_to_text("plain 1 < 2"), "plain 1 < 2");
+    }
+
+    fn draft() -> EventDraft {
+        EventDraft {
+            title: "Lunch".into(),
+            when: When::Timed {
+                start: "2026-11-26T13:00:00Z".parse().unwrap(),
+                end: "2026-11-26T14:00:00Z".parse().unwrap(),
+            },
+            time_zone: Some("Europe/London".into()),
+            location: Some("Dishoom".into()),
+            description: None,
+            guests: vec![],
+            meet: false,
+            rrule: None,
+        }
+    }
+
+    #[test]
+    fn insert_body_has_only_what_was_entered() {
+        assert_eq!(
+            insert_body(&draft(), "rid"),
+            serde_json::json!({
+                "summary": "Lunch",
+                "start": {"dateTime": "2026-11-26T13:00:00Z", "timeZone": "Europe/London"},
+                "end": {"dateTime": "2026-11-26T14:00:00Z", "timeZone": "Europe/London"},
+                "location": "Dishoom",
+            })
+        );
+    }
+
+    #[test]
+    fn insert_body_all_day_guests_meet_and_recurrence() {
+        let mut d = draft();
+        d.when = When::AllDay {
+            start: date(2026, 11, 26),
+            end: date(2026, 11, 27),
+        };
+        d.guests = vec!["a@example.com".into()];
+        d.meet = true;
+        d.rrule = Some("FREQ=WEEKLY;BYDAY=TH".into());
+        let b = insert_body(&d, "rid");
+        assert_eq!(b["start"], serde_json::json!({"date": "2026-11-26"}));
+        assert_eq!(b["end"], serde_json::json!({"date": "2026-11-27"}));
+        assert_eq!(b["attendees"][0]["email"], "a@example.com");
+        assert_eq!(b["recurrence"][0], "RRULE:FREQ=WEEKLY;BYDAY=TH");
+        assert_eq!(b["conferenceData"]["createRequest"]["requestId"], "rid");
+    }
+
+    #[test]
+    fn patch_body_clears_fields_and_never_touches_attendees() {
+        let mut d = draft();
+        d.location = None;
+        d.guests = vec!["a@example.com".into()];
+        d.meet = true;
+        d.rrule = Some("FREQ=DAILY".into());
+        let b = patch_body(&d);
+        assert!(b["location"].is_null());
+        let obj = b.as_object().unwrap();
+        // An unchanged description is left alone; an explicit empty one clears it.
+        assert!(!obj.contains_key("description"));
+        d.description = Some(String::new());
+        assert!(patch_body(&d)["description"].is_null());
+        let obj = b.as_object().unwrap();
+        for key in ["attendees", "recurrence", "conferenceData", "description"] {
+            assert!(!obj.contains_key(key), "{key} must not be patched");
+        }
+    }
+
+    #[test]
+    fn create_update_and_delete_round_trip_against_a_mock() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        fn serve(listener: &TcpListener, status: &str, body: &str) -> String {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+                if request.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let head = String::from_utf8_lossy(&request).to_string();
+            let len = head
+                .lines()
+                .find_map(|l| {
+                    let (n, v) = l.split_once(':')?;
+                    n.eq_ignore_ascii_case("content-length")
+                        .then(|| v.trim().parse::<usize>().unwrap())
+                })
+                .unwrap_or(0);
+            let mut payload = vec![0; len];
+            stream.read_exact(&mut payload).unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            stream.flush().unwrap();
+            format!("{head}{}", String::from_utf8_lossy(&payload))
+        }
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let base = format!("http://{}/calendar/v3", listener.local_addr().unwrap());
+        let stored = r#"{"id":"new1","summary":"Lunch","location":"Dishoom",
+            "start":{"dateTime":"2026-11-26T13:00:00Z"},"end":{"dateTime":"2026-11-26T14:00:00Z"}}"#;
+        let server = thread::spawn(move || {
+            let create = serve(&listener, "200 OK", stored);
+            let update = serve(&listener, "200 OK", stored);
+            let delete = serve(
+                &listener,
+                "410 Gone",
+                r#"{"error":{"message":"Resource has been deleted"}}"#,
+            );
+            (create, update, delete)
+        });
+
+        let mut d = draft();
+        d.meet = true;
+        d.guests = vec!["a@example.com".into()];
+        let created = create_event_at(&agent(), "tok", &cal(), &d, &base).unwrap();
+        assert_eq!(created.id, "new1");
+        assert_eq!(created.title, "Lunch");
+        let updated = update_event_at(&agent(), "tok", &cal(), "new1", &d, &base).unwrap();
+        assert_eq!(updated.id, "new1");
+        delete_event_at(&agent(), "tok", &cal(), "new1", &base).unwrap();
+
+        let (create, update, delete) = server.join().unwrap();
+        let first = create.lines().next().unwrap();
+        assert!(first.starts_with("POST /calendar/v3/calendars/"), "{first}");
+        assert!(first.contains("conferenceDataVersion=1"));
+        assert!(first.contains("sendUpdates=all"));
+        assert!(
+            create
+                .to_ascii_lowercase()
+                .contains("authorization: bearer tok")
+        );
+        assert!(update.starts_with("PATCH /calendar/v3/calendars/"));
+        assert!(
+            update
+                .lines()
+                .next()
+                .unwrap()
+                .contains("/events/new1?fields=")
+        );
+        assert!(delete.starts_with("DELETE /calendar/v3/calendars/"));
     }
 }
