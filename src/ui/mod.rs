@@ -4,6 +4,7 @@ pub mod calendar_views;
 pub mod compose;
 pub mod format;
 pub mod main_view;
+pub mod palette;
 pub mod settings;
 pub mod text_input;
 pub mod theme;
@@ -30,6 +31,9 @@ actions!(
         Quit,
         NewEvent,
         EditEvent,
+        OpenPalette,
+        PaletteUp,
+        PaletteDown,
     ]
 );
 
@@ -49,6 +53,9 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("n", NewEvent, cal),
         KeyBinding::new("e", EditEvent, cal),
         KeyBinding::new("ctrl-n", NewEvent, None),
+        KeyBinding::new("ctrl-k", OpenPalette, None),
+        KeyBinding::new("up", PaletteUp, Some("Palette")),
+        KeyBinding::new("down", PaletteDown, Some("Palette")),
         KeyBinding::new("escape", Back, None),
         KeyBinding::new("ctrl-,", OpenSettings, None),
         KeyBinding::new("ctrl-r", Refresh, None),
