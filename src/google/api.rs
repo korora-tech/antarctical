@@ -632,6 +632,10 @@ fn send_write(
             .post(url.as_str())
             .header("Authorization", &auth)
             .send_json(b),
+        ("POST", None) => agent
+            .post(url.as_str())
+            .header("Authorization", &auth)
+            .send_empty(),
         ("PATCH", Some(b)) => {
             let request = agent.patch(url.as_str()).header("Authorization", &auth);
             match if_match {
@@ -765,6 +769,53 @@ fn update_event_at(
     }
     let text = send_write(agent, "PATCH", &url, token, Some(&body), etag.as_deref())?;
     parse_written(&text, calendar)
+}
+
+/// Moves an event to another calendar of the same account, then applies `draft` (if any) to it
+/// there. Returns the event as Google stores it afterwards.
+pub fn move_event(
+    agent: &ureq::Agent,
+    token: &str,
+    from: &Calendar,
+    event_id: &str,
+    to: &Calendar,
+    draft: Option<&EventDraft>,
+) -> Result<Event, ApiError> {
+    move_event_at(agent, token, from, event_id, to, draft, BASE)
+}
+
+fn move_event_at(
+    agent: &ureq::Agent,
+    token: &str,
+    from: &Calendar,
+    event_id: &str,
+    to: &Calendar,
+    draft: Option<&EventDraft>,
+    api_base: &str,
+) -> Result<Event, ApiError> {
+    if from.account != to.account {
+        return Err(ApiError::InvalidRequest(
+            "events can only move between calendars of the same account".into(),
+        ));
+    }
+    let mut url = event_url(api_base, &from.remote_id, event_id);
+    url.path_segments_mut()
+        .expect("the API base has no query or fragment, so its path segments are mutable")
+        .push("move");
+    url.query_pairs_mut()
+        .append_pair("destination", &to.remote_id)
+        .append_pair("fields", EVENT_FIELDS_ONE);
+    let text = send_write(agent, "POST", &url, token, None, None)?;
+    let moved = parse_written(&text, to)?;
+    let Some(draft) = draft else {
+        return Ok(moved);
+    };
+    // The id is unchanged by a move, so the edit goes to the same id on the new calendar.
+    update_event_at(agent, token, to, event_id, draft, api_base).map_err(|e| {
+        ApiError::InvalidRequest(format!(
+            "the event was moved, but the other changes were not saved: {e}"
+        ))
+    })
 }
 
 /// Deletes an event (one occurrence for a recurring instance id). Already gone counts as done.
@@ -1686,6 +1737,75 @@ mod tests {
             patch_body(&d)["reminders"],
             serde_json::json!({"useDefault": false, "overrides": []})
         );
+    }
+
+    #[test]
+    fn move_posts_to_the_move_endpoint_then_applies_the_edit() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        fn serve(listener: &TcpListener, body: &str) -> String {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+                if request.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let head = String::from_utf8_lossy(&request).to_string();
+            let len = head
+                .lines()
+                .find_map(|l| {
+                    let (n, v) = l.split_once(':')?;
+                    n.eq_ignore_ascii_case("content-length")
+                        .then(|| v.trim().parse::<usize>().unwrap())
+                })
+                .unwrap_or(0);
+            let mut payload = vec![0; len];
+            stream.read_exact(&mut payload).unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            stream.flush().unwrap();
+            head
+        }
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let base = format!("http://{}/calendar/v3", listener.local_addr().unwrap());
+        let stored = r#"{"id":"e1","summary":"Lunch",
+            "start":{"dateTime":"2026-11-26T13:00:00Z"},"end":{"dateTime":"2026-11-26T14:00:00Z"}}"#;
+        let server = thread::spawn(move || {
+            let moved = serve(&listener, stored);
+            let patched = serve(&listener, stored);
+            (moved, patched)
+        });
+        let mut to = cal();
+        to.remote_id = "other@example.com".into();
+        to.id = "me|other@example.com".into();
+        let event =
+            move_event_at(&agent(), "tok", &cal(), "e1", &to, Some(&draft()), &base).unwrap();
+        assert_eq!(event.id, "e1");
+        assert_eq!(event.calendar_id, to.id);
+        let (moved, patched) = server.join().unwrap();
+        assert!(moved.starts_with("POST /calendar/v3/calendars/"));
+        assert!(moved.contains("/events/e1/move?"));
+        assert!(moved.contains("destination=other%40example.com"));
+        // The edit lands on the new calendar.
+        assert!(patched.starts_with("PATCH /calendar/v3/calendars/other@example.com/events/e1"));
+
+        let mut elsewhere = cal();
+        elsewhere.account = "someone@else".into();
+        assert!(matches!(
+            move_event_at(&agent(), "tok", &cal(), "e1", &elsewhere, None, &base),
+            Err(ApiError::InvalidRequest(_))
+        ));
     }
 
     #[test]

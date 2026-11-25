@@ -185,26 +185,53 @@ fn run(rx: mpsc::Receiver<Command>, tx: async_channel::Sender<SyncEvent>) {
             } => {
                 let mut event = event_from_draft(&calendar, event_id.clone(), &draft);
                 // Keep what an edit cannot change.
-                if let Some(old) = writes
+                let was_created = writes
                     .created
                     .iter()
-                    .find(|e| e.id == event_id && e.calendar_id == calendar.id)
-                {
+                    .find(|e| e.id == event_id && e.calendar_id == calendar.id);
+                if let Some(old) = was_created {
                     event.meet_link = old.meet_link.clone();
                 }
+                let was_created = was_created.is_some();
                 writes
                     .created
                     .retain(|e| !(e.id == event_id && e.calendar_id == calendar.id));
                 writes
                     .edited
                     .insert((calendar.id.clone(), event_id), event.clone());
-                if event.id.starts_with("demo-") {
+                if was_created || event.id.starts_with("demo-") {
                     writes.created.push(event.clone());
                 }
                 emit(SyncEvent::WriteFinished {
                     ticket,
                     account: calendar.account,
                     result: Ok(Some(Box::new(event))),
+                });
+            }
+            Command::MoveEvent {
+                ticket,
+                from,
+                event,
+                to,
+                draft,
+            } => {
+                let mut moved = *event;
+                if let Some(draft) = draft {
+                    let edited = event_from_draft(&to, moved.id.clone(), &draft);
+                    moved.title = edited.title;
+                    moved.when = edited.when;
+                    moved.location = edited.location;
+                }
+                writes
+                    .created
+                    .retain(|e| !(e.id == moved.id && e.calendar_id == from.id));
+                writes.deleted.insert((from.id.clone(), moved.id.clone()));
+                moved.calendar_id = to.id.clone();
+                writes.created.push(moved.clone());
+                emit(SyncEvent::WriteFinished {
+                    ticket,
+                    account: from.account,
+                    result: Ok(Some(Box::new(moved))),
                 });
             }
             Command::DeleteEvent {

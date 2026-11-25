@@ -64,6 +64,15 @@ pub enum Command {
         event_id: String,
         draft: Box<EventDraft>,
     },
+    /// Moves one event to another calendar of the same account, applying `draft` afterwards.
+    MoveEvent {
+        ticket: u64,
+        from: Calendar,
+        /// The event as the UI shows it now (its id names the event to move).
+        event: Box<Event>,
+        to: Calendar,
+        draft: Option<Box<EventDraft>>,
+    },
     /// Deletes one event (or one occurrence of a series).
     DeleteEvent {
         ticket: u64,
@@ -559,6 +568,16 @@ impl Worker {
                 draft,
             } => self.write(ticket, calendar, |agent, token, cal| {
                 api::update_event(agent, token, cal, &event_id, &draft).map(|e| Some(Box::new(e)))
+            }),
+            Command::MoveEvent {
+                ticket,
+                from,
+                event,
+                to,
+                draft,
+            } => self.write(ticket, from, |agent, token, from| {
+                api::move_event(agent, token, from, &event.id, &to, draft.as_deref())
+                    .map(|e| Some(Box::new(e)))
             }),
             Command::DeleteEvent {
                 ticket,
