@@ -43,6 +43,15 @@ pub(super) struct EventDrag {
     pub(super) original: Block,
 }
 
+/// An event dragged from one day cell of the month view to another.
+#[derive(Clone)]
+pub(super) struct MonthDrag {
+    pub(super) calendar_id: String,
+    pub(super) event_id: String,
+    /// The cell it was picked up from.
+    pub(super) from: Date,
+}
+
 /// A drag in progress, as shown in the grid.
 #[derive(Clone)]
 pub(super) struct DragState {
@@ -299,10 +308,21 @@ impl MainView {
         let Some(when) = drag::when_of(state.current, &tz) else {
             return;
         };
-        let (calendar_id, event_id) = (dragged.calendar_id.clone(), dragged.event_id.clone());
+        self.commit_when(&dragged.calendar_id, &dragged.event_id, when, cx);
+    }
+
+    /// Writes a new time for an event after a drag, with a notice when that is not possible.
+    fn commit_when(
+        &mut self,
+        calendar_id: &str,
+        event_id: &str,
+        when: crate::model::When,
+        cx: &mut Context<Self>,
+    ) {
+        let tz = TimeZone::system();
         self.store.update(cx, |store, cx| {
-            let calendar = store.calendar(&calendar_id).cloned();
-            let event = store.find_event(&calendar_id, &event_id).cloned();
+            let calendar = store.calendar(calendar_id).cloned();
+            let event = store.find_event(calendar_id, event_id).cloned();
             let (Some(calendar), Some(event)) = (calendar, event) else {
                 return;
             };
@@ -319,7 +339,7 @@ impl MainView {
                 edit_reminders: None,
                 series: None,
             };
-            if !store.update_event(&calendar, &event_id, draft) {
+            if !store.update_event(&calendar, event_id, draft) {
                 store.notice = Some((
                     "That event can't be changed right now.".into(),
                     std::time::Instant::now(),
@@ -327,6 +347,37 @@ impl MainView {
             }
             cx.notify();
         });
+    }
+
+    /// An event dropped on a day of the month view: it moves there, keeping its time.
+    fn drop_on_day(&mut self, dragged: &MonthDrag, to: Date, cx: &mut Context<Self>) {
+        let days = to.since(dragged.from).map(|s| s.get_days()).unwrap_or(0);
+        if days == 0 {
+            return;
+        }
+        let Some(event) = self
+            .store
+            .read(cx)
+            .find_event(&dragged.calendar_id, &dragged.event_id)
+            .cloned()
+        else {
+            return;
+        };
+        let Some(when) = drag::shifted_days(&event.when, days, &TimeZone::system()) else {
+            return;
+        };
+        self.commit_when(&dragged.calendar_id, &dragged.event_id, when, cx);
+    }
+
+    /// Whether a chip in the month view can be picked up: the same events the time grid lets you
+    /// drag, except that any single day or all-day event will do.
+    fn month_draggable(&self, store: &Store, e: &Event) -> bool {
+        store
+            .calendar(&e.calendar_id)
+            .is_some_and(|c| store.can_write(c))
+            && e.is_regular()
+            && !store.is_pending_event(&e.id)
+            && e.user_organizes()
     }
 
     /// A one-line chip: a soft ribbon for all-day events, a dot + time for timed ones.
@@ -572,6 +623,10 @@ impl MainView {
                         OUTSIDE
                     }))
                     .hover(move |s| s.bg(rgb(if is_today { TODAY_HOVER } else { PANEL })))
+                    .drag_over::<MonthDrag>(|s, _, _, _| s.bg(rgb(SELECTED)))
+                    .on_drop(cx.listener(move |this, dragged: &MonthDrag, _, cx| {
+                        this.drop_on_day(dragged, date, cx)
+                    }))
                     .on_click(
                         cx.listener(move |this, _: &ClickEvent, _, cx| this.open_day(date, cx)),
                     )
@@ -605,7 +660,17 @@ impl MainView {
                         } else {
                             ChipSlot::single(id, 4.0, is_past(e, now_ts, &tz))
                         };
-                        self.chip(store, e, date, slot, &tz, cx)
+                        let chip = self.chip(store, e, date, slot, &tz, cx);
+                        if self.month_draggable(store, e) {
+                            let dragged = MonthDrag {
+                                calendar_id: e.calendar_id.clone(),
+                                event_id: e.id.clone(),
+                                from: date,
+                            };
+                            chip.on_drag(dragged, |_, _, _, cx| cx.new(|_| DragGhost))
+                        } else {
+                            chip
+                        }
                     }))
                     .when(hidden > 0, |d| {
                         d.child(

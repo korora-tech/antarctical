@@ -133,6 +133,31 @@ pub fn when_of(block: Block, tz: &TimeZone) -> Option<When> {
     })
 }
 
+/// The event time moved by `days` whole days, keeping the wall-clock time (so a move across a
+/// clock change keeps 09:00 at 09:00). `None` when the time does not exist on the new day.
+pub fn shifted_days(when: &When, days: i32, tz: &TimeZone) -> Option<When> {
+    match when {
+        When::AllDay { start, end } => Some(When::AllDay {
+            start: model::add_days(*start, days),
+            end: model::add_days(*end, days),
+        }),
+        When::Timed { start, end } => {
+            let shift = |t: &jiff::Timestamp| {
+                let z = t.to_zoned(tz.clone());
+                let moved = model::add_days(z.date(), days).to_datetime(z.time());
+                tz.to_ambiguous_zoned(moved)
+                    .compatible()
+                    .ok()
+                    .map(|z| z.timestamp())
+            };
+            Some(When::Timed {
+                start: shift(start)?,
+                end: shift(end)?,
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,5 +290,46 @@ mod tests {
             when_of(block_of(&midnight, &tz).unwrap(), &tz),
             Some(midnight.when)
         );
+    }
+
+    #[test]
+    fn shifting_days_keeps_the_wall_clock_time() {
+        let tz = TimeZone::UTC;
+        let timed = When::Timed {
+            start: "2026-11-25T09:30:00Z".parse().unwrap(),
+            end: "2026-11-25T10:00:00Z".parse().unwrap(),
+        };
+        assert_eq!(
+            shifted_days(&timed, 3, &tz),
+            Some(When::Timed {
+                start: "2026-11-28T09:30:00Z".parse().unwrap(),
+                end: "2026-11-28T10:00:00Z".parse().unwrap(),
+            })
+        );
+        let all_day = When::AllDay {
+            start: date(2026, 11, 30),
+            end: date(2026, 12, 2),
+        };
+        assert_eq!(
+            shifted_days(&all_day, -1, &tz),
+            Some(When::AllDay {
+                start: date(2026, 11, 29),
+                end: date(2026, 12, 1),
+            })
+        );
+        // Across a spring-forward in London the clock time holds, so the instant moves an hour.
+        if let Ok(london) = TimeZone::get("Europe/London") {
+            let morning = When::Timed {
+                start: "2026-03-27T09:00:00Z".parse().unwrap(),
+                end: "2026-03-27T10:00:00Z".parse().unwrap(),
+            };
+            assert_eq!(
+                shifted_days(&morning, 2, &london),
+                Some(When::Timed {
+                    start: "2026-03-29T08:00:00Z".parse().unwrap(),
+                    end: "2026-03-29T09:00:00Z".parse().unwrap(),
+                })
+            );
+        }
     }
 }
