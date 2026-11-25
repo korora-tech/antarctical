@@ -34,6 +34,13 @@ pub struct Calendar {
     pub default_reminders: Vec<i64>,
     /// Google's "shown in the list" flag, used until the user changes visibility.
     pub selected_upstream: bool,
+    /// Whether you can add and change events here (you are an owner or writer, not a reader).
+    #[serde(default = "writable_by_default")]
+    pub writable: bool,
+}
+
+fn writable_by_default() -> bool {
+    true
 }
 
 impl Calendar {

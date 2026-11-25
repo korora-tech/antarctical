@@ -253,10 +253,15 @@ fn calendars() -> Vec<Calendar> {
         primary,
         default_reminders: vec![10],
         selected_upstream: true,
+        writable: true,
+    };
+    let read_only = |mut c: Calendar| {
+        c.writable = false;
+        c
     };
     vec![
         cal(PERSONAL, PERSONAL, PERSONAL, 0xf4511e, true),
-        cal(PERSONAL, "holidays", "Holidays", 0x8e24aa, false),
+        read_only(cal(PERSONAL, "holidays", "Holidays", 0x8e24aa, false)),
         cal(WORK, WORK, WORK, 0x7986cb, true),
         cal(WORK, "team", "Platform team", 0x33b679, false),
     ]

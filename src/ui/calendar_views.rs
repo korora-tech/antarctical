@@ -153,8 +153,8 @@ impl MainView {
     /// A block that can be dragged: a timed event within one day, on a calendar whose account may
     /// be edited, that the user organises (or that has no guests).
     fn draggable_block(&self, store: &Store, e: &Event, tz: &TimeZone) -> Option<Block> {
-        let account = &store.calendar(&e.calendar_id)?.account;
-        (store.can_edit(account) && !store.is_pending_event(&e.id) && e.user_organizes())
+        let calendar = store.calendar(&e.calendar_id)?;
+        (store.can_write(calendar) && !store.is_pending_event(&e.id) && e.user_organizes())
             .then(|| drag::block_of(e, tz))
             .flatten()
     }

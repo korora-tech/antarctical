@@ -878,6 +878,7 @@ mod tests {
             primary: false,
             default_reminders: vec![],
             selected_upstream: selected,
+            writable: true,
         }
     }
 
