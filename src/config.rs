@@ -21,6 +21,8 @@ pub enum ViewMode {
 pub struct Prefs {
     /// Calendars the user toggled explicitly; others follow Google's `selected` flag.
     pub calendar_visibility: BTreeMap<String, bool>,
+    /// Named sets of calendars (account-qualified ids) that can be switched to in one click.
+    pub calendar_sets: BTreeMap<String, Vec<String>>,
     /// Accounts that have explicitly opted into RSVP and completed OAuth consent for it.
     pub rsvp_accounts: std::collections::BTreeSet<String>,
     pub reminders: bool,
@@ -41,6 +43,7 @@ impl Default for Prefs {
     fn default() -> Self {
         Self {
             calendar_visibility: BTreeMap::new(),
+            calendar_sets: BTreeMap::new(),
             rsvp_accounts: std::collections::BTreeSet::new(),
             reminders: true,
             offline_cache: true,

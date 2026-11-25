@@ -685,6 +685,39 @@ impl MainView {
                 }),
         );
 
+        // Saved calendar sets: one click shows exactly those calendars.
+        let active_set = store.active_calendar_set().map(str::to_string);
+        let sets =
+            (!store.prefs.calendar_sets.is_empty()).then(|| {
+                div().flex().flex_wrap().gap(px(6.0)).children(
+                    store.prefs.calendar_sets.keys().map(|name| {
+                        let active = active_set.as_deref() == Some(name.as_str());
+                        let target = name.clone();
+                        div()
+                            .id(SharedString::from(format!("set-{name}")))
+                            .h(px(22.0))
+                            .px(px(9.0))
+                            .flex()
+                            .items_center()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(rgb(if active { ACCENT } else { BORDER }))
+                            .text_size(px(11.5))
+                            .text_color(rgb(if active { TEXT } else { SECONDARY }))
+                            .when(active, |d| d.bg(rgb(SELECTED)))
+                            .hover(|s| s.bg(rgb(HOVER)).cursor_pointer())
+                            .on_click(self.listener_click(cx, move |this, _, cx| {
+                                let target = target.clone();
+                                this.store.update(cx, |s, cx| {
+                                    s.apply_calendar_set(&target);
+                                    cx.notify();
+                                });
+                            }))
+                            .child(name.clone())
+                    }),
+                )
+            });
+
         div()
             .w(px(SIDEBAR_W))
             .flex_shrink_0()
@@ -735,6 +768,7 @@ impl MainView {
                     .flex_shrink_0()
                     .bg(rgb(GRID_LINE)),
             )
+            .children(sets)
             .child(
                 div()
                     .id("calendar-list")
