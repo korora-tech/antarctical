@@ -40,9 +40,8 @@ const STATUS_DEMO: &str = "Demo mode: kept in memory, not in the keyring";
 const STATUS_LOCKED: &str = "Keyring locked: unlock it and press Ctrl+R";
 const STATUS_SAVED: &str = "Client ID and secret are stored in the keyring";
 const STATUS_BUILTIN: &str = "Using the built-in client";
-const ACCOUNT_SIGN_IN_INFO: &str =
-    "No account yet. Accounts are read-only by default; RSVP needs a fresh, per-account sign-in.";
-const ACCOUNT_SIGNED_IN_INFO: &str = "Accounts are read-only by default. Enable replies per account with a fresh sign-in; turning the option off hides replies but does not revoke Google's existing grant. Remove the account to revoke it.";
+const ACCOUNT_SIGN_IN_INFO: &str = "No account yet. Accounts are read-only by default; creating and editing events and replying to invitations need a fresh, per-account sign-in.";
+const ACCOUNT_SIGNED_IN_INFO: &str = "Accounts are read-only by default. Enable editing per account with a fresh sign-in; turning the option off hides the controls but does not revoke Google's existing grant. Remove the account to revoke it.";
 const SIGN_IN_PENDING_INFO: &str =
     "Waiting for you to choose an account and approve access in the browser…";
 
@@ -368,7 +367,7 @@ impl Render for SettingsView {
                     )
                     .child(checkbox_row(
                         SharedString::from(format!("reply-{email}")),
-                        "Reply to invitations",
+                        "Edit events and reply to invitations",
                         if can_toggle_reply { ACCENT } else { DISABLED },
                         reply_enabled,
                         can_toggle_reply.then(|| {

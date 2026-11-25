@@ -16,7 +16,7 @@ use jiff::civil::Date;
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, Zoned};
 
-use crate::google::api::{self, ApiError};
+use crate::google::api::{self, ApiError, EventDraft};
 use crate::google::oauth::{self, AuthError, ClientCredentials, TokenResponse};
 use crate::model;
 use crate::model::{Calendar, Event, Response};
@@ -50,6 +50,25 @@ pub enum Command {
         calendar: Calendar,
         event: Box<Event>,
         response: Response,
+    },
+    /// Creates an event. `ticket` ties the optimistic UI copy to the eventual result.
+    CreateEvent {
+        ticket: u64,
+        calendar: Calendar,
+        draft: Box<EventDraft>,
+    },
+    /// Edits one event (or one occurrence of a series).
+    UpdateEvent {
+        ticket: u64,
+        calendar: Calendar,
+        event_id: String,
+        draft: Box<EventDraft>,
+    },
+    /// Deletes one event (or one occurrence of a series).
+    DeleteEvent {
+        ticket: u64,
+        calendar: Calendar,
+        event_id: String,
     },
     CancelSignIn,
     /// Signs one account out: revokes its token and forgets it.
@@ -115,6 +134,13 @@ pub enum SyncEvent {
         email: String,
         enabled: bool,
     },
+    /// Completion of an optimistic create, edit or delete. `Ok(Some(event))` carries the event as
+    /// Google stored it (creates and edits); `Ok(None)` is a completed delete.
+    WriteFinished {
+        ticket: u64,
+        account: String,
+        result: Result<Option<Box<Event>>, WriteFailure>,
+    },
     /// Completion of an optimistic RSVP update.
     ReplyFinished {
         calendar_id: String,
@@ -123,6 +149,14 @@ pub enum SyncEvent {
         error: Option<String>,
         missing_scope: bool,
     },
+}
+
+/// Why an event write failed.
+#[derive(Clone, Debug)]
+pub struct WriteFailure {
+    pub message: String,
+    /// The account's token lacks the events scope; editing must be re-authorised.
+    pub missing_scope: bool,
 }
 
 #[derive(Clone)]
@@ -511,6 +545,28 @@ impl Worker {
                 event,
                 response,
             } => self.reply(calendar, event, response),
+            Command::CreateEvent {
+                ticket,
+                calendar,
+                draft,
+            } => self.write(ticket, calendar, |agent, token, cal| {
+                api::create_event(agent, token, cal, &draft).map(|e| Some(Box::new(e)))
+            }),
+            Command::UpdateEvent {
+                ticket,
+                calendar,
+                event_id,
+                draft,
+            } => self.write(ticket, calendar, |agent, token, cal| {
+                api::update_event(agent, token, cal, &event_id, &draft).map(|e| Some(Box::new(e)))
+            }),
+            Command::DeleteEvent {
+                ticket,
+                calendar,
+                event_id,
+            } => self.write(ticket, calendar, |agent, token, cal| {
+                api::delete_event(agent, token, cal, &event_id).map(|()| None)
+            }),
             Command::CancelSignIn => self.cancel_sign_in(),
             Command::SignInFinished(seq, result) => self.finish_sign_in(seq, result),
             Command::RemoveAccount(email) => {
@@ -865,6 +921,47 @@ impl Worker {
         });
     }
 
+    /// Runs one event write for `calendar`'s account and reports the outcome. Writes need the
+    /// events scope, which the user grants per account (the same opt-in as invitation replies).
+    fn write(
+        &mut self,
+        ticket: u64,
+        calendar: Calendar,
+        op: impl Fn(&ureq::Agent, &str, &Calendar) -> Result<Option<Box<Event>>, ApiError>,
+    ) {
+        let account = calendar.account.clone();
+        let result = if !self.reply_enabled.contains(&account) {
+            Err(WriteFailure {
+                message: "Editing is not enabled for this account. Turn it on in Settings.".into(),
+                missing_scope: false,
+            })
+        } else {
+            match self.with_token(&account, |agent, token| op(agent, token, &calendar)) {
+                Ok(event) => Ok(event),
+                Err(CallError::Api(error)) => Err(WriteFailure {
+                    missing_scope: error.missing_scope(),
+                    message: error.to_string(),
+                }),
+                Err(error) => Err(WriteFailure {
+                    message: error.to_string(),
+                    missing_scope: false,
+                }),
+            }
+        };
+        let ok = result.is_ok();
+        self.emit(SyncEvent::WriteFinished {
+            ticket,
+            account,
+            result,
+        });
+        if ok {
+            // A recurring create returns only the first occurrence, and any write can shift
+            // what other months show: refetch what is on screen.
+            self.fetched.clear();
+            self.refresh_all();
+        }
+    }
+
     fn cancel_rsvp_sign_in_for_account(&mut self, email: &str) {
         if matches!(
             self.sign_in_purpose.as_ref(),
@@ -1131,18 +1228,9 @@ impl Worker {
                     }
                 };
                 for &month in &run {
-                    let m_from = model::day_start(month, &tz).timestamp();
-                    let m_to = model::day_start(model::add_months(month, 1), &tz).timestamp();
                     let in_month = events
                         .iter()
-                        .filter(|e| {
-                            let span = e.instants(&tz);
-                            if span.start == span.end {
-                                span.start >= m_from && span.start < m_to
-                            } else {
-                                span.start < m_to && span.end > m_from
-                            }
-                        })
+                        .filter(|e| e.in_month(month, &tz))
                         .cloned()
                         .collect();
                     self.emit(SyncEvent::Month {

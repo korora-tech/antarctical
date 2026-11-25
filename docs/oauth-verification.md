@@ -9,7 +9,7 @@ Calendar scopes are **sensitive**, not restricted, so no third-party security as
 | Scope | When requested | Used for |
 |---|---|---|
 | `calendar.readonly` | Every sign-in (default) | `calendarList.list`, `events.list`, `colors.get`: show calendars and events, drive reminders |
-| `calendar.events` | Only after the user enables **Reply to invitations** for an account (replaces `calendar.readonly` for that account) | `events.patch` to set the user's own attendee response. Also event create/edit/delete when those ship |
+| `calendar.events` | Only after the user enables **Edit events and reply to invitations** for an account (replaces `calendar.readonly` for that account) | `events.patch` to set the user's own attendee response; `events.insert`, `events.patch` and `events.delete` for events the user creates, edits or deletes in the app |
 | `calendar.calendarlist.readonly` | With `calendar.events` | `calendarList.list` and the account email (primary calendar id). `calendar.events` cannot list calendars |
 
 Nothing else is requested: no `openid`, `userinfo.*`, full `calendar`, or `calendar.app.created`. Those came from commit `eecce94` and were removed by the opt-in RSVP work; the consent screen in the Cloud Console may still list them and must be trimmed to match.
@@ -40,7 +40,7 @@ The built-in client ID in `src/google/oauth.rs` must belong to the project being
 Antarctical is a desktop calendar app. It uses this scope to list the signed-in user's calendars and fetch their events so it can display month, week, day and agenda views and show desktop reminders. Data is fetched directly from Google to the user's computer and is not sent to any server operated by us. The scope is read-only; a narrower scope is not available because the app needs events and the calendar list from every calendar the user can see, including calendars shared with them.
 
 **`calendar.events`:**
-Used only when the user turns on "Reply to invitations" for an account. The app then sends the user's accept, decline or maybe response to an invitation by updating the user's own attendee status on that event. Invitations are on calendars the user does not own, so `calendar.events.owned` cannot be used. The app does not request this scope unless the user enables the feature, and replaces the read-only grant for that account. [Add once shipped: the same scope lets the user create, edit and delete events from inside Antarctical when they ask.]
+Used only when the user turns on "Edit events and reply to invitations" for an account. The app then sends the user's accept, decline or maybe response to an invitation by updating the user's own attendee status on that event. Invitations are on calendars the user does not own, so `calendar.events.owned` cannot be used. The app does not request this scope unless the user enables the feature, and replaces the read-only grant for that account. The same scope lets the user create, edit and delete events from inside Antarctical: a quick-add bar and an editor call `events.insert`, `events.patch` and `events.delete` only when the user submits them. When the user types a guest's email into a new event, Google sends that guest an invitation.
 
 **`calendar.calendarlist.readonly`:**
 Requested together with `calendar.events`, which does not allow listing calendars. The app needs the calendar list to show the user's calendars, and the account's email address (the ID of the primary calendar) to tell accounts apart.
@@ -52,7 +52,7 @@ Show the browser address bar with the OAuth client ID during consent. Record the
 1. **Intro (15 s):** "This is Antarctical, a desktop calendar for Linux. It talks to Google Calendar directly from this computer."
 2. **Sign-in, read-only (45 s):** Settings → Add account. Show the browser opening, the full URL (client ID visible, `scope=...calendar.readonly`), the consent screen listing the single read-only permission, then approve. Return to the app.
 3. **Use of `calendar.readonly` (45 s):** show the calendar list with show/hide toggles, month, week and agenda views, event details, and a desktop reminder notification.
-4. **Opt in to replies (60 s):** Settings → enable **Reply to invitations** for the account. Show the new consent URL with `calendar.events` and `calendar.calendarlist.readonly`, the consent screen, then approve.
+4. **Opt in to replies (60 s):** Settings → enable **Edit events and reply to invitations** for the account. Show the new consent URL with `calendar.events` and `calendar.calendarlist.readonly`, the consent screen, then approve.
 5. **Use of `calendar.events` (45 s):** open an invitation, click Accept, show the status change in Antarctical and then in the Google Calendar web UI.
 6. **Data handling and revocation (30 s):** show the keyring entry holding only the refresh token, remove the account in Settings, then show it gone from https://myaccount.google.com/permissions.
 7. **Privacy (10 s):** show the privacy policy page at the verified domain.

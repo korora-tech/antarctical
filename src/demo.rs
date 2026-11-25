@@ -8,9 +8,61 @@ use jiff::civil::{Date, Weekday};
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, ToSpan, Zoned};
 
+use crate::google::api::EventDraft;
 use crate::model;
 use crate::model::{Attendee, Calendar, Event, Response, When};
 use crate::sync::{AuthState, Command, SyncEvent, SyncHandle};
+
+/// Events created, edited or deleted during a demo session; they live only in memory.
+#[derive(Default)]
+struct DemoWrites {
+    created: Vec<Event>,
+    edited: HashMap<(String, String), Event>,
+    deleted: HashSet<(String, String)>,
+    next_id: u64,
+}
+
+impl DemoWrites {
+    fn apply(&self, calendar_id: &str, month: Date, events: &mut Vec<Event>, tz: &TimeZone) {
+        events.retain(|e| {
+            !self
+                .deleted
+                .contains(&(calendar_id.to_string(), e.id.clone()))
+        });
+        for e in events.iter_mut() {
+            if let Some(edited) = self.edited.get(&(calendar_id.to_string(), e.id.clone())) {
+                *e = edited.clone();
+            }
+        }
+        events.retain(|e| e.in_month(month, tz));
+        let created = self
+            .created
+            .iter()
+            .filter(|e| e.calendar_id == calendar_id && e.in_month(month, tz))
+            .cloned();
+        events.extend(created);
+    }
+}
+
+fn event_from_draft(calendar: &Calendar, id: String, draft: &EventDraft) -> Event {
+    Event {
+        id,
+        calendar_id: calendar.id.clone(),
+        title: draft.title.clone(),
+        when: draft.when,
+        color: None,
+        location: draft.location.clone(),
+        description: draft.description.clone(),
+        html_link: None,
+        meet_link: draft
+            .meet
+            .then(|| "https://meet.google.com/demo".to_string()),
+        organizer: None,
+        attendees: vec![],
+        reminders: vec![10],
+        tentative: false,
+    }
+}
 
 pub fn start() -> std::io::Result<(SyncHandle, async_channel::Receiver<SyncEvent>)> {
     let (tx, rx) = mpsc::channel();
@@ -36,30 +88,34 @@ fn run(rx: mpsc::Receiver<Command>, tx: async_channel::Sender<SyncEvent>) {
     let today = Zoned::now().date();
     let mut reply_enabled = HashSet::new();
     let mut reply_overrides = HashMap::new();
-    let send_months = |months: &[Date], overrides: &HashMap<(String, String), Response>| {
-        for &month in months {
-            for cal in &cals {
-                let mut events = events_for(cal, month, today, &tz);
-                apply_reply_overrides(&mut events, overrides);
-                emit(SyncEvent::Month {
-                    calendar_id: cal.id.clone(),
-                    month,
-                    events,
-                });
+    let mut writes = DemoWrites::default();
+    let send_months =
+        |months: &[Date], overrides: &HashMap<(String, String), Response>, writes: &DemoWrites| {
+            for &month in months {
+                for cal in &cals {
+                    let mut events = events_for(cal, month, today, &tz);
+                    apply_reply_overrides(&mut events, overrides);
+                    writes.apply(&cal.id, month, &mut events, &tz);
+                    emit(SyncEvent::Month {
+                        calendar_id: cal.id.clone(),
+                        month,
+                        events,
+                    });
+                }
             }
-        }
-        emit(SyncEvent::Synced(Timestamp::now()));
-    };
+            emit(SyncEvent::Synced(Timestamp::now()));
+        };
     let m = today.first_of_month();
     send_months(
         &[model::add_months(m, -1), m, model::add_months(m, 1)],
         &reply_overrides,
+        &writes,
     );
     while let Ok(cmd) = rx.recv() {
         match cmd {
-            Command::Want(_, months) => send_months(&months, &reply_overrides),
+            Command::Want(_, months) => send_months(&months, &reply_overrides, &writes),
             Command::Forget(_) => {}
-            Command::Refresh => send_months(&[m], &reply_overrides),
+            Command::Refresh => send_months(&[m], &reply_overrides, &writes),
             Command::SaveClient { client_id, .. } => {
                 emit(SyncEvent::Client(Some(client_id)));
                 emit(SyncEvent::Notice(
@@ -105,6 +161,65 @@ fn run(rx: mpsc::Receiver<Command>, tx: async_channel::Sender<SyncEvent>) {
                     account: calendar.account,
                     error,
                     missing_scope: false,
+                });
+            }
+            Command::CreateEvent {
+                ticket,
+                calendar,
+                draft,
+            } => {
+                writes.next_id += 1;
+                let event = event_from_draft(&calendar, format!("demo-{}", writes.next_id), &draft);
+                writes.created.push(event.clone());
+                emit(SyncEvent::WriteFinished {
+                    ticket,
+                    account: calendar.account,
+                    result: Ok(Some(Box::new(event))),
+                });
+            }
+            Command::UpdateEvent {
+                ticket,
+                calendar,
+                event_id,
+                draft,
+            } => {
+                let mut event = event_from_draft(&calendar, event_id.clone(), &draft);
+                // Keep what an edit cannot change.
+                if let Some(old) = writes
+                    .created
+                    .iter()
+                    .find(|e| e.id == event_id && e.calendar_id == calendar.id)
+                {
+                    event.meet_link = old.meet_link.clone();
+                }
+                writes
+                    .created
+                    .retain(|e| !(e.id == event_id && e.calendar_id == calendar.id));
+                writes
+                    .edited
+                    .insert((calendar.id.clone(), event_id), event.clone());
+                if event.id.starts_with("demo-") {
+                    writes.created.push(event.clone());
+                }
+                emit(SyncEvent::WriteFinished {
+                    ticket,
+                    account: calendar.account,
+                    result: Ok(Some(Box::new(event))),
+                });
+            }
+            Command::DeleteEvent {
+                ticket,
+                calendar,
+                event_id,
+            } => {
+                writes
+                    .created
+                    .retain(|e| !(e.id == event_id && e.calendar_id == calendar.id));
+                writes.deleted.insert((calendar.id.clone(), event_id));
+                emit(SyncEvent::WriteFinished {
+                    ticket,
+                    account: calendar.account,
+                    result: Ok(None),
                 });
             }
             Command::DismissProblems => emit(SyncEvent::Problem(None)),

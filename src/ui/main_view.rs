@@ -11,6 +11,7 @@ use jiff::Zoned;
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
 
+use super::compose::{ComposeEvent, EditorView, QuickAddView};
 use super::format;
 use super::settings::{SettingsEvent, SettingsView};
 use super::theme::{
@@ -28,8 +29,8 @@ use super::widgets::{
     control_group, ghost_button, link, segment,
 };
 use super::{
-    Back, CloseWindow, Next, OpenSettings, Previous, Quit, Refresh, ShowAgenda, ShowDay, ShowMonth,
-    ShowWeek, Today,
+    Back, CloseWindow, EditEvent, NewEvent, Next, OpenSettings, Previous, Quit, Refresh,
+    ShowAgenda, ShowDay, ShowMonth, ShowWeek, Today,
 };
 use crate::branding;
 use crate::config::ViewMode;
@@ -61,6 +62,12 @@ pub enum Screen {
     Settings,
 }
 
+/// A modal event-entry overlay.
+enum Compose {
+    QuickAdd(Entity<QuickAddView>),
+    Edit(Entity<EditorView>),
+}
+
 pub struct MainView {
     pub(super) store: Entity<Store>,
     settings: Entity<SettingsView>,
@@ -75,6 +82,8 @@ pub struct MainView {
     pub(super) agenda_scroll: ScrollHandle,
     detail_scroll: ScrollHandle,
     wanted: Vec<Date>,
+    compose: Option<Compose>,
+    _compose_subscription: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
     _ticker: Task<()>,
 }
@@ -117,6 +126,8 @@ impl MainView {
             agenda_scroll: ScrollHandle::new(),
             detail_scroll: ScrollHandle::new(),
             wanted: vec![],
+            compose: None,
+            _compose_subscription: None,
             _subscriptions: subs,
             _ticker: ticker,
         };
@@ -141,6 +152,85 @@ impl MainView {
         self.agenda_scroll.set_offset(gpui::point(px(0.0), px(0.0)));
         self.request_range(cx);
         self.focus_calendar(window, cx);
+        cx.notify();
+    }
+
+    // ----- event entry --------------------------------------------------------------------
+
+    fn close_compose(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.compose.take().is_some() {
+            self._compose_subscription = None;
+            window.focus(&self.focus, cx);
+            cx.notify();
+        }
+    }
+
+    fn on_compose_event(&mut self, ev: &ComposeEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match ev {
+            ComposeEvent::Close => self.close_compose(window, cx),
+            ComposeEvent::OpenSettings => {
+                self.close_compose(window, cx);
+                self.show_settings(window, cx);
+            }
+        }
+    }
+
+    fn open_quick_add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.compose.is_some() || self.screen != Screen::Calendar {
+            return;
+        }
+        let store = self.store.clone();
+        let anchor = self.anchor;
+        let view = cx.new(|cx| QuickAddView::new(store, anchor, cx));
+        self._compose_subscription = Some(cx.subscribe_in(
+            &view,
+            window,
+            |this, _, ev: &ComposeEvent, window, cx| this.on_compose_event(ev, window, cx),
+        ));
+        let handle = view.read(cx).first_focus(cx);
+        self.compose = Some(Compose::QuickAdd(view));
+        window.focus(&handle, cx);
+        cx.notify();
+    }
+
+    /// Opens the editor for the selected event, when its account may edit.
+    fn open_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.compose.is_some() || self.screen != Screen::Calendar {
+            return;
+        }
+        let Some((cal_id, ev_id)) = self.selected.clone() else {
+            return;
+        };
+        let store = self.store.read(cx);
+        let Some(event) = store.find_event(&cal_id, &ev_id).cloned() else {
+            return;
+        };
+        let editable = store
+            .calendar(&cal_id)
+            .is_some_and(|c| store.can_edit(&c.account));
+        if store.is_pending_event(&ev_id) {
+            return;
+        }
+        if !editable {
+            self.store.update(cx, |store, cx| {
+                store.notice = Some((
+                    "Editing is off for this account. Turn it on in Settings.".into(),
+                    std::time::Instant::now(),
+                ));
+                cx.notify();
+            });
+            return;
+        }
+        let store = self.store.clone();
+        let view = cx.new(|cx| EditorView::new(store, &event, cx));
+        self._compose_subscription = Some(cx.subscribe_in(
+            &view,
+            window,
+            |this, _, ev: &ComposeEvent, window, cx| this.on_compose_event(ev, window, cx),
+        ));
+        let handle = view.read(cx).first_focus(cx);
+        self.compose = Some(Compose::Edit(view));
+        window.focus(&handle, cx);
         cx.notify();
     }
 
@@ -234,6 +324,10 @@ impl MainView {
     }
 
     fn back(&mut self, _: &Back, window: &mut Window, cx: &mut Context<Self>) {
+        if self.compose.is_some() {
+            self.close_compose(window, cx);
+            return;
+        }
         match self.screen {
             Screen::Settings => self.show_calendar(window, cx),
             Screen::Calendar => {
@@ -374,6 +468,19 @@ impl MainView {
                                 .w(px(SEGMENT_W))
                             },
                         )))
+                    })
+                    .when(in_calendar, |d| {
+                        d.child(
+                            button(
+                                "new-event",
+                                "New event",
+                                ButtonStyle::Primary,
+                                Some(self.listener_click(cx, |this, window, cx| {
+                                    this.open_quick_add(window, cx)
+                                })),
+                            )
+                            .h(px(CONTROL_H)),
+                        )
                     })
                     .child(
                         button(
@@ -878,6 +985,29 @@ impl MainView {
             sections.push(facts);
         }
 
+        let can_edit_event = !store.is_pending_event(&event.id)
+            && store
+                .calendar(&event.calendar_id)
+                .is_some_and(|c| store.can_edit(&c.account));
+        if can_edit_event {
+            sections.push(
+                div().flex().child(
+                    button(
+                        "edit-event",
+                        "Edit event",
+                        ButtonStyle::Secondary,
+                        Some(
+                            self.listener_click(cx, |this, window, cx| {
+                                this.open_editor(window, cx)
+                            }),
+                        ),
+                    )
+                    .w_full()
+                    .h(px(DETAIL_ACTION_H)),
+                ),
+            );
+        }
+
         if let Some(calendar) = reply_calendar {
             let pending = store.reply_pending(&event.calendar_id, &event.id);
             let event_for_reply = Event::clone(event);
@@ -1240,6 +1370,10 @@ impl Render for MainView {
             .key_context("Antarctical")
             .on_action(cx.listener(Self::back))
             .on_action(
+                cx.listener(|this, _: &NewEvent, window, cx| this.open_quick_add(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &EditEvent, window, cx| this.open_editor(window, cx)))
+            .on_action(
                 cx.listener(|this, _: &OpenSettings, window, cx| this.show_settings(window, cx)),
             )
             .on_action(
@@ -1291,6 +1425,11 @@ impl Render for MainView {
                 ),
             )
             .children(toast)
+            .children(match &self.compose {
+                Some(Compose::QuickAdd(view)) => Some(view.clone().into_any_element()),
+                Some(Compose::Edit(view)) => Some(view.clone().into_any_element()),
+                None => None,
+            })
     }
 }
 

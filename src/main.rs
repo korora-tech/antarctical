@@ -7,6 +7,7 @@ mod demo;
 mod google;
 mod layout;
 mod model;
+mod quickadd;
 mod reminders;
 mod secrets;
 mod store;

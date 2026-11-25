@@ -186,6 +186,20 @@ impl Event {
         }
     }
 
+    /// Whether this event belongs in the month chunk starting at `month` (a first-of-month date).
+    /// Matches how the sync worker splits fetched events, so optimistic edits land in the same
+    /// chunks a refetch would put them in.
+    pub fn in_month(&self, month: Date, tz: &TimeZone) -> bool {
+        let span = self.instants(tz);
+        let from = day_start(month, tz).timestamp();
+        let to = day_start(add_months(month, 1), tz).timestamp();
+        if span.start == span.end {
+            span.start >= from && span.start < to
+        } else {
+            span.start < to && span.end > from
+        }
+    }
+
     /// Start instant converted to the requested time zone.
     pub fn start_zoned(&self, tz: &TimeZone) -> Zoned {
         self.instants(tz).start.to_zoned(tz.clone())
