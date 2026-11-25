@@ -312,6 +312,7 @@ impl MainView {
                 rrule: None,
                 edit_guests: None,
                 edit_reminders: None,
+                series: None,
             };
             if !store.update_event(&calendar, &event_id, draft) {
                 store.notice = Some((

@@ -9,7 +9,7 @@ use jiff::civil::Date;
 use jiff::tz::TimeZone;
 
 use crate::config::Prefs;
-use crate::google::api::{EventDraft, RemindersEdit};
+use crate::google::api::{EventDraft, RemindersEdit, series_id};
 use crate::model;
 use crate::model::{Attendee, Calendar, Event, Response, When};
 use crate::sync::{AuthState, Command, SyncEvent, SyncHandle, WriteFailure};
@@ -39,6 +39,13 @@ enum WriteKind {
         event: Event,
     },
     Delete(Event),
+    /// Every loaded occurrence of a series, as they were and as they will be after the edit.
+    Series {
+        previous: Vec<Event>,
+        updated: Vec<Event>,
+    },
+    /// Every loaded occurrence of a series that is being deleted.
+    DeleteSeries(Vec<Event>),
     /// Moved to another calendar (`event.calendar_id`), possibly with edits applied.
     Move {
         previous: Event,
@@ -87,6 +94,39 @@ fn apply_guest_and_reminder_edits(event: &mut Event, draft: &EventDraft, calenda
             }
         }
         Some(RemindersEdit::Custom(minutes)) => event.reminders = minutes.clone(),
+    }
+}
+
+/// An occurrence's time after a whole-series edit that sets the time of day and length to those
+/// of `new`: the date stays. Anything that is not timed on both sides is left alone.
+pub fn shifted_when(old: &When, new: &When, tz: &TimeZone) -> When {
+    let (
+        When::Timed {
+            start: old_start, ..
+        },
+        When::Timed {
+            start: new_start,
+            end: new_end,
+        },
+    ) = (old, new)
+    else {
+        return *old;
+    };
+    let date = old_start.to_zoned(tz.clone()).date();
+    let time = new_start.to_zoned(tz.clone()).time();
+    let Ok(shifted) = date
+        .at(time.hour(), time.minute(), time.second(), 0)
+        .to_zoned(tz.clone())
+    else {
+        return *old;
+    };
+    let start = shifted.timestamp();
+    let length = new_end
+        .duration_since(*new_start)
+        .max(jiff::SignedDuration::ZERO);
+    When::Timed {
+        start,
+        end: start + length,
     }
 }
 
@@ -465,6 +505,126 @@ impl Store {
         true
     }
 
+    /// Every loaded occurrence of the series `instance_id` belongs to.
+    fn series_instances(&self, calendar_id: &str, instance_id: &str) -> Vec<Event> {
+        let Some(series) = series_id(instance_id) else {
+            return vec![];
+        };
+        let mut seen = HashSet::new();
+        self.chunks
+            .get(calendar_id)
+            .into_iter()
+            .flat_map(|months| months.values().flatten())
+            .filter(|e| series_id(&e.id) == Some(series) && seen.insert(e.id.clone()))
+            .cloned()
+            .collect()
+    }
+
+    /// Whether any write on this calendar touches the series of `event_id`.
+    fn series_in_flight(&self, calendar_id: &str, event_id: &str) -> bool {
+        let Some(series) = series_id(event_id) else {
+            return false;
+        };
+        self.pending_writes.values().any(|w| {
+            w.calendar_id == calendar_id
+                && match &w.kind {
+                    WriteKind::Series { previous, .. } | WriteKind::DeleteSeries(previous) => {
+                        previous.iter().any(|e| series_id(&e.id) == Some(series))
+                    }
+                    WriteKind::Update { event, .. } => series_id(&event.id) == Some(series),
+                    WriteKind::Delete(event) => series_id(&event.id) == Some(series),
+                    WriteKind::Move { event, .. } => series_id(&event.id) == Some(series),
+                    WriteKind::Create(_) => false,
+                }
+        })
+    }
+
+    /// Edits every occurrence of a repeating series at once. `instance_id` is the occurrence
+    /// the editor was opened on. Returns false when that is not possible.
+    pub fn update_series(
+        &mut self,
+        calendar: &Calendar,
+        instance_id: &str,
+        draft: EventDraft,
+    ) -> bool {
+        if !self.can_write(calendar)
+            || self.is_pending_event(instance_id)
+            || self.series_in_flight(&calendar.id, instance_id)
+        {
+            return false;
+        }
+        let previous = self.series_instances(&calendar.id, instance_id);
+        if previous.is_empty() {
+            return false;
+        }
+        let tz = TimeZone::system();
+        let change_time = draft.series.is_some_and(|s| s.change_time);
+        let updated: Vec<Event> = previous
+            .iter()
+            .map(|old| {
+                let mut each = draft.clone();
+                each.when = if change_time {
+                    shifted_when(&old.when, &draft.when, &tz)
+                } else {
+                    old.when
+                };
+                edited_copy(old, &each, calendar)
+            })
+            .collect();
+        for event in &updated {
+            self.insert_event(event.clone());
+        }
+        let ticket = self.ticket();
+        self.pending_writes.insert(
+            ticket,
+            PendingWrite {
+                calendar_id: calendar.id.clone(),
+                kind: WriteKind::Series { previous, updated },
+            },
+        );
+        self.send(Command::UpdateSeries {
+            ticket,
+            calendar: calendar.clone(),
+            event_id: instance_id.to_string(),
+            draft: Box::new(draft),
+        });
+        true
+    }
+
+    /// Deletes a whole repeating series. Returns false when that is not possible.
+    pub fn delete_series(&mut self, calendar: &Calendar, instance_id: &str) -> bool {
+        if !self.can_write(calendar)
+            || self.is_pending_event(instance_id)
+            || self.series_in_flight(&calendar.id, instance_id)
+        {
+            return false;
+        }
+        let Some(series) = series_id(instance_id).map(str::to_string) else {
+            return false;
+        };
+        let events = self.series_instances(&calendar.id, instance_id);
+        if events.is_empty() {
+            return false;
+        }
+        for event in &events {
+            self.remove_event(&calendar.id, &event.id);
+        }
+        let ticket = self.ticket();
+        self.pending_writes.insert(
+            ticket,
+            PendingWrite {
+                calendar_id: calendar.id.clone(),
+                kind: WriteKind::DeleteSeries(events),
+            },
+        );
+        self.send(Command::DeleteEvent {
+            ticket,
+            calendar: calendar.clone(),
+            event_id: series,
+        });
+        true
+    }
+
     /// Moves an event to another calendar of the same account (applying `draft`, when given, as
     /// well). Returns false when that is not possible: another account, a read-only target, a
     /// repeating occurrence, an event you do not organise, or one that is busy.
@@ -553,6 +713,9 @@ impl Store {
                 WriteKind::Move { event, .. } => {
                     event.id == event_id && (here || event.calendar_id == calendar_id)
                 }
+                WriteKind::Series { previous, .. } | WriteKind::DeleteSeries(previous) => {
+                    here && previous.iter().any(|e| e.id == event_id)
+                }
             }
         })
     }
@@ -572,6 +735,8 @@ impl Store {
             WriteKind::Update { .. } => "save the event",
             WriteKind::Delete(_) => "delete the event",
             WriteKind::Move { .. } => "move the event",
+            WriteKind::Series { .. } => "save the series",
+            WriteKind::DeleteSeries(_) => "delete the series",
         };
         match (write.kind, result) {
             (WriteKind::Create(temp), Ok(Some(real))) => {
@@ -595,6 +760,11 @@ impl Store {
                     }
                     WriteKind::Update { previous, .. } => self.insert_event(previous),
                     WriteKind::Delete(event) => self.insert_event(event),
+                    WriteKind::Series { previous, .. } | WriteKind::DeleteSeries(previous) => {
+                        for event in previous {
+                            self.insert_event(event);
+                        }
+                    }
                     WriteKind::Move { previous, event } => {
                         self.remove_event(&event.calendar_id, &event.id);
                         self.insert_event(previous);
@@ -640,6 +810,13 @@ impl Store {
             }
             match &w.kind {
                 WriteKind::Move { .. } => {}
+                WriteKind::Series { previous, updated } => {
+                    events.retain(|e| !previous.iter().any(|p| p.id == e.id));
+                    events.extend(updated.iter().filter(|e| e.in_month(month, &tz)).cloned());
+                }
+                WriteKind::DeleteSeries(gone) => {
+                    events.retain(|e| !gone.iter().any(|g| g.id == e.id));
+                }
                 WriteKind::Create(e) => {
                     if e.in_month(month, &tz) {
                         events.push(e.clone());
@@ -1441,6 +1618,7 @@ mod tests {
             rrule: None,
             edit_guests: None,
             edit_reminders: None,
+            series: None,
         }
     }
 
@@ -1707,6 +1885,122 @@ mod tests {
         });
         assert!(!s.move_event(&a, "series_20261005", &a2, None));
         assert!(rx.try_recv().is_err());
+    }
+
+    fn timed_at(cal: &str, id: &str, day: Date, hour: i8) -> Event {
+        let tz = TimeZone::system();
+        let start = day.at(hour, 0, 0, 0).to_zoned(tz).unwrap().timestamp();
+        let mut e = all_day(cal, id, day, day);
+        e.when = When::Timed {
+            start,
+            end: start + jiff::SignedDuration::from_mins(30),
+        };
+        e
+    }
+
+    fn with_series() -> (Store, std::sync::mpsc::Receiver<Command>, Calendar) {
+        let (mut s, rx) = store_with_rx();
+        s.apply(SyncEvent::Month {
+            calendar_id: "a".into(),
+            month: date(2026, 10, 1),
+            events: vec![
+                timed_at("a", "daily_20261005", date(2026, 10, 5), 9),
+                timed_at("a", "daily_20261006", date(2026, 10, 6), 9),
+                timed_at("a", "other", date(2026, 10, 6), 12),
+            ],
+        });
+        let cal = s.calendar("a").unwrap().clone();
+        (s, rx, cal)
+    }
+
+    #[test]
+    fn editing_a_series_changes_every_loaded_occurrence_and_keeps_their_dates() {
+        let (mut s, rx, cal) = with_series();
+        let mut d = draft("Standup");
+        d.when = timed_at("a", "x", date(2026, 10, 20), 10).when;
+        d.series = Some(crate::google::api::SeriesEdit { change_time: true });
+        assert!(s.update_series(&cal, "daily_20261006", d));
+        let tz = TimeZone::system();
+        for (id, day) in [
+            ("daily_20261005", date(2026, 10, 5)),
+            ("daily_20261006", date(2026, 10, 6)),
+        ] {
+            let e = s.find_event("a", id).unwrap();
+            assert_eq!(e.title, "Standup");
+            let When::Timed { start, end } = e.when else {
+                panic!()
+            };
+            let local = start.to_zoned(tz.clone());
+            assert_eq!((local.date(), local.hour()), (day, 10));
+            assert_eq!(
+                end.duration_since(start),
+                jiff::SignedDuration::from_mins(30)
+            );
+        }
+        // Other events are untouched, and the series is busy until the write ends.
+        assert_eq!(s.find_event("a", "other").unwrap().title, "other");
+        assert!(!s.update_series(&cal, "daily_20261005", draft("Again")));
+        assert!(!s.delete_series(&cal, "daily_20261005"));
+        assert!(!s.update_event(&cal, "daily_20261005", draft("Single")));
+        let Ok(Command::UpdateSeries { ticket, .. }) = rx.try_recv() else {
+            panic!("expected a series command")
+        };
+
+        // A stale refresh does not undo it; a failure puts every occurrence back.
+        s.apply(SyncEvent::Month {
+            calendar_id: "a".into(),
+            month: date(2026, 10, 1),
+            events: vec![timed_at("a", "daily_20261005", date(2026, 10, 5), 9)],
+        });
+        assert_eq!(
+            s.find_event("a", "daily_20261005").unwrap().title,
+            "Standup"
+        );
+        s.apply(SyncEvent::WriteFinished {
+            ticket,
+            account: "me@x".into(),
+            result: Err(WriteFailure {
+                message: "boom".into(),
+                missing_scope: false,
+            }),
+        });
+        assert_eq!(
+            s.find_event("a", "daily_20261005").unwrap().title,
+            "daily_20261005"
+        );
+        assert!(s.find_event("a", "daily_20261006").is_some());
+        assert!(
+            s.problem
+                .as_deref()
+                .unwrap()
+                .contains("save the series: boom")
+        );
+    }
+
+    #[test]
+    fn deleting_a_series_removes_every_occurrence_and_asks_for_the_series_id() {
+        let (mut s, rx, cal) = with_series();
+        assert!(s.delete_series(&cal, "daily_20261006"));
+        assert!(s.find_event("a", "daily_20261005").is_none());
+        assert!(s.find_event("a", "daily_20261006").is_none());
+        assert!(s.find_event("a", "other").is_some());
+        let Ok(Command::DeleteEvent {
+            ticket, event_id, ..
+        }) = rx.try_recv()
+        else {
+            panic!("expected a delete command")
+        };
+        assert_eq!(event_id, "daily");
+        s.apply(SyncEvent::WriteFinished {
+            ticket,
+            account: "me@x".into(),
+            result: Err(WriteFailure {
+                message: "boom".into(),
+                missing_scope: false,
+            }),
+        });
+        assert!(s.find_event("a", "daily_20261005").is_some());
+        assert!(s.find_event("a", "daily_20261006").is_some());
     }
 
     #[test]

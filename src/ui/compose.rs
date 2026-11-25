@@ -18,6 +18,7 @@ use super::theme::{AMBER, CAPTION, MUTED, PANEL, SECONDARY, SELECTED_BORDER, TEX
 use super::widgets::{ButtonStyle, button};
 use crate::google::api::EventDraft;
 use crate::google::api::RemindersEdit;
+use crate::google::api::SeriesEdit;
 use crate::model::{Calendar, Event, When};
 use crate::quickadd::{self, DEFAULT_DURATION_MINUTES, Parsed};
 use crate::store::Store;
@@ -170,6 +171,7 @@ pub fn resolve(
             rrule: parsed.recurrence.map(|r| r.rrule),
             edit_guests: None,
             edit_reminders: None,
+            series: None,
         },
         calendar,
         problem,
@@ -641,6 +643,10 @@ pub struct EditorView {
     target_calendar_id: String,
     /// Moving needs a plain event you organise (not one occurrence of a series).
     can_move: bool,
+    /// The event is one occurrence of a series you organise, so the edit can cover them all.
+    in_series: bool,
+    /// The edit and delete apply to the whole series.
+    whole_series: bool,
     error: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
@@ -691,6 +697,8 @@ impl EditorView {
             confirm_delete: false,
             target_calendar_id: event.calendar_id.clone(),
             can_move: event.user_organizes() && !event.is_recurring_instance(),
+            in_series: event.user_organizes() && event.is_recurring_instance(),
+            whole_series: false,
             error: None,
             _subscriptions: subs,
         }
@@ -708,6 +716,12 @@ impl EditorView {
             .filter(|c| c.account == current.account && store.can_write(c))
             .cloned()
             .collect()
+    }
+
+    fn toggle_scope(&mut self, cx: &mut Context<Self>) {
+        self.whole_series = !self.whole_series;
+        self.confirm_delete = false;
+        cx.notify();
     }
 
     /// Picks the next calendar in the list.
@@ -798,7 +812,11 @@ impl EditorView {
             rrule: None,
             edit_guests,
             edit_reminders,
+            series: (self.in_series && self.whole_series).then_some(SeriesEdit {
+                change_time: matches!(when, When::Timed { .. }) && when != self.original_when,
+            }),
         };
+        let whole_series = self.in_series && self.whole_series;
         let (calendar_id, event_id) = (self.calendar_id.clone(), self.event_id.clone());
         let target_id = self.target_calendar_id.clone();
         let ok = self.store.update(cx, |store, cx| {
@@ -808,7 +826,9 @@ impl EditorView {
             if !store.can_write(&calendar) {
                 return false;
             }
-            let ok = if target_id != calendar_id
+            let ok = if whole_series {
+                store.update_series(&calendar, &event_id, draft)
+            } else if target_id != calendar_id
                 && let Some(target) = store.calendar(&target_id).cloned()
             {
                 store.move_event(&calendar, &event_id, &target, Some(draft))
@@ -835,6 +855,7 @@ impl EditorView {
             cx.notify();
             return;
         }
+        let whole_series = self.in_series && self.whole_series;
         let (calendar_id, event_id) = (self.calendar_id.clone(), self.event_id.clone());
         let ok = self.store.update(cx, |store, cx| {
             let Some(calendar) = store.calendar(&calendar_id).cloned() else {
@@ -843,7 +864,11 @@ impl EditorView {
             if !store.can_write(&calendar) {
                 return false;
             }
-            let ok = store.delete_event(&calendar, &event_id);
+            let ok = if whole_series {
+                store.delete_series(&calendar, &event_id)
+            } else {
+                store.delete_event(&calendar, &event_id)
+            };
             cx.notify();
             ok
         });
@@ -905,6 +930,7 @@ impl Render for EditorView {
                             rrule: None,
                             edit_guests: None,
                             edit_reminders: None,
+                            series: None,
                         },
                     );
                     (format::event_when_long(&ev, &tz, clock), SECONDARY)
@@ -929,6 +955,7 @@ impl Render for EditorView {
         let can_pick_calendar = self.can_move && self.move_targets(cx).len() > 1;
         let error = self.error.clone();
         let confirm = self.confirm_delete;
+        let whole_series_now = self.whole_series;
 
         backdrop()
             .on_mouse_down(
@@ -957,6 +984,30 @@ impl Render for EditorView {
                                     .child(SharedString::from(calendar_label)),
                             ),
                     )
+                    .children(self.in_series.then(|| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(rgb(MUTED))
+                                    .child("Changes apply to"),
+                            )
+                            .child(button(
+                                "editor-scope",
+                                if whole_series_now {
+                                    "All events in the series ▸"
+                                } else {
+                                    "This event only ▸"
+                                },
+                                ButtonStyle::Secondary,
+                                Some(Box::new(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.toggle_scope(cx)
+                                }))),
+                            ))
+                    }))
                     .child(field("Title", self.title.clone()))
                     .child(field("When", self.when.clone()))
                     .children(when_preview.map(|(text, color)| {
@@ -1006,10 +1057,11 @@ impl Render for EditorView {
                             .justify_between()
                             .child(button(
                                 "editor-delete",
-                                if confirm {
-                                    "Click again to delete"
-                                } else {
-                                    "Delete"
+                                match (confirm, whole_series_now) {
+                                    (true, true) => "Click again to delete the series",
+                                    (true, false) => "Click again to delete",
+                                    (false, true) => "Delete series",
+                                    (false, false) => "Delete",
                                 },
                                 ButtonStyle::Danger,
                                 Some(Box::new(
