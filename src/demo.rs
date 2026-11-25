@@ -8,9 +8,10 @@ use jiff::civil::{Date, Weekday};
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, ToSpan, Zoned};
 
-use crate::google::api::EventDraft;
+use crate::google::api::{EventDraft, series_id};
 use crate::model;
 use crate::model::{Attendee, Calendar, Event, Response, When};
+use crate::store::shifted_when;
 use crate::sync::{AuthState, Command, SyncEvent, SyncHandle};
 
 /// Events created, edited or deleted during a demo session; they live only in memory.
@@ -19,17 +20,30 @@ struct DemoWrites {
     created: Vec<Event>,
     edited: HashMap<(String, String), Event>,
     deleted: HashSet<(String, String)>,
+    /// Whole-series edits, by (calendar, series id).
+    series: HashMap<(String, String), EventDraft>,
     next_id: u64,
 }
 
 impl DemoWrites {
     fn apply(&self, calendar_id: &str, month: Date, events: &mut Vec<Event>, tz: &TimeZone) {
         events.retain(|e| {
-            !self
-                .deleted
-                .contains(&(calendar_id.to_string(), e.id.clone()))
+            let gone = |id: &str| {
+                self.deleted
+                    .contains(&(calendar_id.to_string(), id.to_string()))
+            };
+            !gone(&e.id) && !series_id(&e.id).is_some_and(gone)
         });
         for e in events.iter_mut() {
+            if let Some(draft) = series_id(&e.id)
+                .and_then(|s| self.series.get(&(calendar_id.to_string(), s.to_string())))
+            {
+                e.title = draft.title.clone();
+                e.location = draft.location.clone().filter(|l| !l.is_empty());
+                if draft.series.is_some_and(|s| s.change_time) {
+                    e.when = shifted_when(&e.when, &draft.when, tz);
+                }
+            }
             if let Some(edited) = self.edited.get(&(calendar_id.to_string(), e.id.clone())) {
                 *e = edited.clone();
             }
@@ -206,6 +220,23 @@ fn run(rx: mpsc::Receiver<Command>, tx: async_channel::Sender<SyncEvent>) {
                     ticket,
                     account: calendar.account,
                     result: Ok(Some(Box::new(event))),
+                });
+            }
+            Command::UpdateSeries {
+                ticket,
+                calendar,
+                event_id,
+                draft,
+            } => {
+                if let Some(series) = series_id(&event_id) {
+                    writes
+                        .series
+                        .insert((calendar.id.clone(), series.to_string()), *draft);
+                }
+                emit(SyncEvent::WriteFinished {
+                    ticket,
+                    account: calendar.account,
+                    result: Ok(None),
                 });
             }
             Command::MoveEvent {
@@ -405,7 +436,7 @@ fn events_for(cal: &Calendar, month: Date, today: Date, tz: &TimeZone) -> Vec<Ev
             "team" => {
                 if weekday {
                     let mut e = base(
-                        format!("standup-{key}"),
+                        format!("standup_{key}"),
                         "Standup",
                         timed(d, (9, 30), (9, 45)),
                     );

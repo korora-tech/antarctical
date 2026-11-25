@@ -429,6 +429,20 @@ pub struct EventDraft {
     pub edit_guests: Option<Vec<String>>,
     /// Edit only: `None` leaves the reminders alone.
     pub edit_reminders: Option<RemindersEdit>,
+    /// Edit only: apply the edit to the whole repeating series instead of one occurrence.
+    pub series: Option<SeriesEdit>,
+}
+
+/// How an edit of a whole repeating series treats the time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SeriesEdit {
+    /// Move every occurrence to the time of day (and length) in the draft. Their dates stay.
+    pub change_time: bool,
+}
+
+/// The id of the series an occurrence belongs to (`<series>_<date>`), if `id` is an occurrence.
+pub fn series_id(instance_id: &str) -> Option<&str> {
+    instance_id.rsplit_once('_').map(|(series, _)| series)
 }
 
 /// A change to an event's reminders.
@@ -729,7 +743,105 @@ fn update_event_at(
     draft: &EventDraft,
     api_base: &str,
 ) -> Result<Event, ApiError> {
+    let body = patch_body(draft);
+    patch_with_guests(agent, token, calendar, event_id, body, draft, api_base)
+}
+
+/// Edits every occurrence of the series that `instance_id` belongs to. The title, location,
+/// guests and reminders go to the series itself; with `change_time` the series' first
+/// occurrence moves to the draft's time of day and length, on its own date, which shifts the
+/// whole series.
+fn update_series_at(
+    agent: &ureq::Agent,
+    token: &str,
+    calendar: &Calendar,
+    instance_id: &str,
+    draft: &EventDraft,
+    tz: &jiff::tz::TimeZone,
+    api_base: &str,
+) -> Result<(), ApiError> {
+    let series = series_id(instance_id)
+        .ok_or_else(|| ApiError::InvalidRequest("this is not part of a repeating series".into()))?;
     let mut body = patch_body(draft);
+    let object = body.as_object_mut().expect("a patch body is a JSON object");
+    object.remove("start");
+    object.remove("end");
+    if draft.series.is_some_and(|s| s.change_time) {
+        let When::Timed {
+            start: new_start,
+            end: new_end,
+        } = draft.when
+        else {
+            return Err(ApiError::InvalidRequest(
+                "only the time of timed events can be changed for a series".into(),
+            ));
+        };
+        let mut url = event_url(api_base, &calendar.remote_id, series);
+        url.query_pairs_mut().append_pair("fields", "start,end");
+        let master: SeriesTimes = get(agent, &url, token)?;
+        let first = master
+            .start
+            .and_then(|t| t.date_time)
+            .and_then(|t| t.parse::<Timestamp>().ok())
+            .ok_or_else(|| {
+                ApiError::InvalidRequest("this series has no start time to change".into())
+            })?;
+        let time_of_day = new_start.to_zoned(tz.clone()).time();
+        let date = first.to_zoned(tz.clone()).date();
+        let start = date
+            .at(
+                time_of_day.hour(),
+                time_of_day.minute(),
+                time_of_day.second(),
+                0,
+            )
+            .to_zoned(tz.clone())
+            .map_err(|e| ApiError::InvalidRequest(e.to_string()))?
+            .timestamp();
+        let end = start
+            + new_end
+                .duration_since(new_start)
+                .max(jiff::SignedDuration::ZERO);
+        let (s, e) = wire_when(&When::Timed { start, end }, draft.time_zone.as_deref());
+        object.insert("start".into(), s);
+        object.insert("end".into(), e);
+    }
+    patch_with_guests(agent, token, calendar, series, body, draft, api_base).map(|_| ())
+}
+
+/// Public entry point for [`update_series_at`], in the system time zone.
+pub fn update_series(
+    agent: &ureq::Agent,
+    token: &str,
+    calendar: &Calendar,
+    instance_id: &str,
+    draft: &EventDraft,
+) -> Result<(), ApiError> {
+    update_series_at(
+        agent,
+        token,
+        calendar,
+        instance_id,
+        draft,
+        &jiff::tz::TimeZone::system(),
+        BASE,
+    )
+}
+
+#[derive(Deserialize)]
+struct SeriesTimes {
+    start: Option<WireTime>,
+}
+
+fn patch_with_guests(
+    agent: &ureq::Agent,
+    token: &str,
+    calendar: &Calendar,
+    event_id: &str,
+    mut body: serde_json::Value,
+    draft: &EventDraft,
+    api_base: &str,
+) -> Result<Event, ApiError> {
     let mut etag = None;
     if let Some(wanted) = &draft.edit_guests {
         // Merge into what Google holds now, not what we loaded earlier, and refuse to overwrite
@@ -1593,6 +1705,7 @@ mod tests {
             rrule: None,
             edit_guests: None,
             edit_reminders: None,
+            series: None,
         }
     }
 
@@ -1739,51 +1852,52 @@ mod tests {
         );
     }
 
+    /// Answers one HTTP request on `listener` with 200 and `body`; returns the request.
+    fn serve_ok(listener: &std::net::TcpListener, body: &str) -> String {
+        use std::io::{Read, Write};
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = Vec::new();
+        loop {
+            let mut byte = [0];
+            stream.read_exact(&mut byte).unwrap();
+            request.push(byte[0]);
+            if request.ends_with(b"\r\n\r\n") {
+                break;
+            }
+        }
+        let head = String::from_utf8_lossy(&request).to_string();
+        let len = head
+            .lines()
+            .find_map(|l| {
+                let (n, v) = l.split_once(':')?;
+                n.eq_ignore_ascii_case("content-length")
+                    .then(|| v.trim().parse::<usize>().unwrap())
+            })
+            .unwrap_or(0);
+        let mut payload = vec![0; len];
+        stream.read_exact(&mut payload).unwrap();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        stream.flush().unwrap();
+        format!("{head}{}", String::from_utf8_lossy(&payload))
+    }
+
     #[test]
     fn move_posts_to_the_move_endpoint_then_applies_the_edit() {
-        use std::io::{Read, Write};
         use std::net::TcpListener;
         use std::thread;
-
-        fn serve(listener: &TcpListener, body: &str) -> String {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = Vec::new();
-            loop {
-                let mut byte = [0];
-                stream.read_exact(&mut byte).unwrap();
-                request.push(byte[0]);
-                if request.ends_with(b"\r\n\r\n") {
-                    break;
-                }
-            }
-            let head = String::from_utf8_lossy(&request).to_string();
-            let len = head
-                .lines()
-                .find_map(|l| {
-                    let (n, v) = l.split_once(':')?;
-                    n.eq_ignore_ascii_case("content-length")
-                        .then(|| v.trim().parse::<usize>().unwrap())
-                })
-                .unwrap_or(0);
-            let mut payload = vec![0; len];
-            stream.read_exact(&mut payload).unwrap();
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            )
-            .unwrap();
-            stream.flush().unwrap();
-            head
-        }
 
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let base = format!("http://{}/calendar/v3", listener.local_addr().unwrap());
         let stored = r#"{"id":"e1","summary":"Lunch",
             "start":{"dateTime":"2026-11-26T13:00:00Z"},"end":{"dateTime":"2026-11-26T14:00:00Z"}}"#;
         let server = thread::spawn(move || {
-            let moved = serve(&listener, stored);
-            let patched = serve(&listener, stored);
+            let moved = serve_ok(&listener, stored);
+            let patched = serve_ok(&listener, stored);
             (moved, patched)
         });
         let mut to = cal();
@@ -1806,6 +1920,69 @@ mod tests {
             move_event_at(&agent(), "tok", &cal(), "e1", &elsewhere, None, &base),
             Err(ApiError::InvalidRequest(_))
         ));
+    }
+
+    #[test]
+    fn a_series_edit_patches_the_series_and_keeps_its_dates() {
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let base = format!("http://{}/calendar/v3", listener.local_addr().unwrap());
+        let master = r#"{"start":{"dateTime":"2026-10-05T09:30:00Z"},"end":{"dateTime":"2026-10-05T09:45:00Z"}}"#;
+        let stored = r#"{"id":"series","summary":"Standup",
+            "start":{"dateTime":"2026-10-05T10:00:00Z"},"end":{"dateTime":"2026-10-05T10:30:00Z"}}"#;
+        let server = thread::spawn(move || {
+            let get = serve_ok(&listener, master);
+            let patch = serve_ok(&listener, stored);
+            let plain = serve_ok(&listener, stored);
+            (get, patch, plain)
+        });
+        // This occurrence is on 26 November; the editor moved it to 10:00-10:30.
+        let mut d = draft();
+        d.title = "Standup".into();
+        d.when = When::Timed {
+            start: "2026-11-26T10:00:00Z".parse().unwrap(),
+            end: "2026-11-26T10:30:00Z".parse().unwrap(),
+        };
+        d.time_zone = Some("UTC".into());
+        d.series = Some(SeriesEdit { change_time: true });
+        update_series_at(
+            &agent(),
+            "tok",
+            &cal(),
+            "series_20261126T093000Z",
+            &d,
+            &jiff::tz::TimeZone::UTC,
+            &base,
+        )
+        .unwrap();
+        d.series = Some(SeriesEdit { change_time: false });
+        update_series_at(
+            &agent(),
+            "tok",
+            &cal(),
+            "series_20261126T093000Z",
+            &d,
+            &jiff::tz::TimeZone::UTC,
+            &base,
+        )
+        .unwrap();
+        let (get, patch, plain) = server.join().unwrap();
+        assert!(get.starts_with("GET /calendar/v3/calendars/"));
+        assert!(get.contains("/events/series?"));
+        assert!(patch.starts_with("PATCH /calendar/v3/calendars/"));
+        assert!(patch.contains("/events/series?"));
+        let body: serde_json::Value =
+            serde_json::from_str(patch.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        // The series keeps its first date (5 October) and takes the new time of day and length.
+        assert_eq!(body["start"]["dateTime"], "2026-10-05T10:00:00Z");
+        assert_eq!(body["end"]["dateTime"], "2026-10-05T10:30:00Z");
+        assert_eq!(body["summary"], "Standup");
+        // Without a time change the series' own times are not sent.
+        let body: serde_json::Value =
+            serde_json::from_str(plain.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert!(body.get("start").is_none() && body.get("end").is_none());
     }
 
     #[test]

@@ -64,6 +64,13 @@ pub enum Command {
         event_id: String,
         draft: Box<EventDraft>,
     },
+    /// Edits every occurrence of the series `event_id` (one of its occurrences) belongs to.
+    UpdateSeries {
+        ticket: u64,
+        calendar: Calendar,
+        event_id: String,
+        draft: Box<EventDraft>,
+    },
     /// Moves one event to another calendar of the same account, applying `draft` afterwards.
     MoveEvent {
         ticket: u64,
@@ -568,6 +575,14 @@ impl Worker {
                 draft,
             } => self.write(ticket, calendar, |agent, token, cal| {
                 api::update_event(agent, token, cal, &event_id, &draft).map(|e| Some(Box::new(e)))
+            }),
+            Command::UpdateSeries {
+                ticket,
+                calendar,
+                event_id,
+                draft,
+            } => self.write(ticket, calendar, |agent, token, cal| {
+                api::update_series(agent, token, cal, &event_id, &draft).map(|()| None)
             }),
             Command::MoveEvent {
                 ticket,
