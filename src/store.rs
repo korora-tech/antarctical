@@ -524,6 +524,21 @@ impl Store {
             .collect()
     }
 
+    /// The loaded occurrences of the series from `instance_id` on (that one included).
+    fn following_instances(&self, calendar_id: &str, instance_id: &str) -> Vec<Event> {
+        let tz = TimeZone::system();
+        let Some(from) = self
+            .find_event(calendar_id, instance_id)
+            .map(|e| e.start_zoned(&tz).timestamp())
+        else {
+            return vec![];
+        };
+        self.series_instances(calendar_id, instance_id)
+            .into_iter()
+            .filter(|e| e.start_zoned(&tz).timestamp() >= from)
+            .collect()
+    }
+
     /// Whether any write on this calendar touches the series of `event_id`.
     fn series_in_flight(&self, calendar_id: &str, event_id: &str) -> bool {
         let Some(series) = series_id(event_id) else {
@@ -557,7 +572,12 @@ impl Store {
         {
             return false;
         }
-        let previous = self.series_instances(&calendar.id, instance_id);
+        let following = draft.series.is_some_and(|s| s.following);
+        let previous = if following {
+            self.following_instances(&calendar.id, instance_id)
+        } else {
+            self.series_instances(&calendar.id, instance_id)
+        };
         if previous.is_empty() {
             return false;
         }
@@ -597,6 +617,20 @@ impl Store {
 
     /// Deletes a whole repeating series. Returns false when that is not possible.
     pub fn delete_series(&mut self, calendar: &Calendar, instance_id: &str) -> bool {
+        self.delete_series_from(calendar, instance_id, false)
+    }
+
+    /// Deletes this occurrence and the ones after it by ending the series before it.
+    pub fn delete_following(&mut self, calendar: &Calendar, instance_id: &str) -> bool {
+        self.delete_series_from(calendar, instance_id, true)
+    }
+
+    fn delete_series_from(
+        &mut self,
+        calendar: &Calendar,
+        instance_id: &str,
+        following: bool,
+    ) -> bool {
         if !self.can_write(calendar)
             || self.is_pending_event(instance_id)
             || self.series_in_flight(&calendar.id, instance_id)
@@ -606,7 +640,11 @@ impl Store {
         let Some(series) = series_id(instance_id).map(str::to_string) else {
             return false;
         };
-        let events = self.series_instances(&calendar.id, instance_id);
+        let events = if following {
+            self.following_instances(&calendar.id, instance_id)
+        } else {
+            self.series_instances(&calendar.id, instance_id)
+        };
         if events.is_empty() {
             return false;
         }
@@ -621,10 +659,18 @@ impl Store {
                 kind: WriteKind::DeleteSeries(events),
             },
         );
-        self.send(Command::DeleteEvent {
-            ticket,
-            calendar: calendar.clone(),
-            event_id: series,
+        self.send(if following {
+            Command::DeleteFollowing {
+                ticket,
+                calendar: calendar.clone(),
+                event_id: instance_id.to_string(),
+            }
+        } else {
+            Command::DeleteEvent {
+                ticket,
+                calendar: calendar.clone(),
+                event_id: series,
+            }
         });
         true
     }
@@ -2075,11 +2121,48 @@ mod tests {
     }
 
     #[test]
+    fn editing_following_occurrences_leaves_earlier_ones_alone() {
+        let (mut s, rx, cal) = with_series();
+        let mut d = draft("Standup");
+        d.when = timed_at("a", "x", date(2026, 10, 6), 10).when;
+        d.series = Some(crate::google::api::SeriesEdit {
+            change_time: true,
+            following: true,
+        });
+        assert!(s.update_series(&cal, "daily_20261006", d));
+        assert_eq!(
+            s.find_event("a", "daily_20261005").unwrap().title,
+            "daily_20261005"
+        );
+        assert_eq!(
+            s.find_event("a", "daily_20261006").unwrap().title,
+            "Standup"
+        );
+        assert!(matches!(rx.try_recv(), Ok(Command::UpdateSeries { .. })));
+    }
+
+    #[test]
+    fn deleting_following_occurrences_keeps_earlier_ones() {
+        let (mut s, rx, cal) = with_series();
+        assert!(s.delete_following(&cal, "daily_20261006"));
+        assert!(s.find_event("a", "daily_20261005").is_some());
+        assert!(s.find_event("a", "daily_20261006").is_none());
+        assert!(s.find_event("a", "other").is_some());
+        let Ok(Command::DeleteFollowing { event_id, .. }) = rx.try_recv() else {
+            panic!("expected DeleteFollowing")
+        };
+        assert_eq!(event_id, "daily_20261006");
+    }
+
+    #[test]
     fn editing_a_series_changes_every_loaded_occurrence_and_keeps_their_dates() {
         let (mut s, rx, cal) = with_series();
         let mut d = draft("Standup");
         d.when = timed_at("a", "x", date(2026, 10, 20), 10).when;
-        d.series = Some(crate::google::api::SeriesEdit { change_time: true });
+        d.series = Some(crate::google::api::SeriesEdit {
+            change_time: true,
+            following: false,
+        });
         assert!(s.update_series(&cal, "daily_20261006", d));
         let tz = TimeZone::system();
         for (id, day) in [

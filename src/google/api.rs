@@ -439,6 +439,9 @@ pub struct EventDraft {
 pub struct SeriesEdit {
     /// Move every occurrence to the time of day (and length) in the draft. Their dates stay.
     pub change_time: bool,
+    /// Only this occurrence and the ones after it: the series is cut before it and a new series
+    /// carries the edit from there on.
+    pub following: bool,
 }
 
 /// The id of the series an occurrence belongs to (`<series>_<date>`), if `id` is an occurrence.
@@ -762,6 +765,9 @@ fn update_series_at(
     tz: &jiff::tz::TimeZone,
     api_base: &str,
 ) -> Result<(), ApiError> {
+    if draft.series.is_some_and(|s| s.following) {
+        return update_following_at(agent, token, calendar, instance_id, draft, api_base);
+    }
     let series = series_id(instance_id)
         .ok_or_else(|| ApiError::InvalidRequest("this is not part of a repeating series".into()))?;
     let mut body = patch_body(draft);
@@ -809,6 +815,203 @@ fn update_series_at(
         object.insert("end".into(), e);
     }
     patch_with_guests(agent, token, calendar, series, body, draft, api_base).map(|_| ())
+}
+
+/// Where an occurrence of a series starts, read from its id (`<series>_<date>` for all-day
+/// events, `<series>_<yyyymmddThhmmssZ>` for timed ones).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InstanceStart {
+    Date(jiff::civil::Date),
+    Instant(Timestamp),
+}
+
+fn instance_start(instance_id: &str) -> Option<InstanceStart> {
+    let (_, suffix) = instance_id.rsplit_once('_')?;
+    if let Ok(date) = jiff::civil::Date::strptime("%Y%m%d", suffix) {
+        return Some(InstanceStart::Date(date));
+    }
+    let at = jiff::civil::DateTime::strptime("%Y%m%dT%H%M%SZ", suffix).ok()?;
+    Some(InstanceStart::Instant(
+        at.to_zoned(jiff::tz::TimeZone::UTC).ok()?.timestamp(),
+    ))
+}
+
+/// The `UNTIL` value that ends a series just before the occurrence that starts at `start`.
+fn until_before(start: InstanceStart) -> Option<String> {
+    Some(match start {
+        InstanceStart::Date(d) => d.yesterday().ok()?.strftime("%Y%m%d").to_string(),
+        InstanceStart::Instant(t) => (t - jiff::SignedDuration::from_secs(1))
+            .strftime("%Y%m%dT%H%M%SZ")
+            .to_string(),
+    })
+}
+
+/// The body of an `RRULE:` line without its `UNTIL` and `COUNT` parts.
+fn rule_without_end(rule: &str) -> String {
+    rule.split(';')
+        .filter(|p| !p.starts_with("UNTIL=") && !p.starts_with("COUNT="))
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+#[derive(Deserialize)]
+struct SeriesMaster {
+    #[serde(default)]
+    recurrence: Vec<String>,
+    description: Option<String>,
+    #[serde(default)]
+    attendees: Vec<WireAttendee>,
+    reminders: Option<serde_json::Value>,
+}
+
+/// The `recurrence` lines of a series, cut so that it ends before `until`. Errors when the
+/// series has no plain rule or counts its repeats (a count cannot be split without listing them).
+fn cut_recurrence(lines: &[String], until: &str) -> Result<(Vec<String>, String), ApiError> {
+    let mut rule = None;
+    let mut cut = Vec::new();
+    for line in lines {
+        match line.strip_prefix("RRULE:") {
+            Some(body) => {
+                if body.split(';').any(|p| p.starts_with("COUNT=")) {
+                    return Err(ApiError::InvalidRequest(
+                        "a series with a fixed number of repeats can't be split; \
+                         change one event or the whole series"
+                            .into(),
+                    ));
+                }
+                rule = Some(rule_without_end(body));
+                cut.push(format!("RRULE:{};UNTIL={until}", rule_without_end(body)));
+            }
+            None => cut.push(line.clone()),
+        }
+    }
+    rule.map(|r| (cut, r))
+        .ok_or_else(|| ApiError::InvalidRequest("this series has no repeat rule to split".into()))
+}
+
+/// Edits this occurrence and every later one: a new series starting at the occurrence carries the
+/// edit (and the original repeat rule), then the old series is cut just before it. The new series
+/// is created first so a failure never loses the later occurrences. Meet links are not carried.
+fn update_following_at(
+    agent: &ureq::Agent,
+    token: &str,
+    calendar: &Calendar,
+    instance_id: &str,
+    draft: &EventDraft,
+    api_base: &str,
+) -> Result<(), ApiError> {
+    let series = series_id(instance_id)
+        .ok_or_else(|| ApiError::InvalidRequest("this is not part of a repeating series".into()))?;
+    let until = instance_start(instance_id)
+        .and_then(until_before)
+        .ok_or_else(|| ApiError::InvalidRequest("this occurrence has an unreadable date".into()))?;
+    let mut url = event_url(api_base, &calendar.remote_id, series);
+    url.query_pairs_mut().append_pair(
+        "fields",
+        "recurrence,description,reminders,attendees(email,self,organizer,resource)",
+    );
+    let master: SeriesMaster = get(agent, &url, token)?;
+    let (cut, rule) = cut_recurrence(&master.recurrence, &until)?;
+
+    let mut new = draft.clone();
+    new.rrule = Some(rule);
+    new.meet = false;
+    if new.description.is_none() {
+        new.description = master.description.clone();
+    }
+    new.guests = match &draft.edit_guests {
+        Some(wanted) => wanted.clone(),
+        None => master
+            .attendees
+            .iter()
+            .filter(|a| !a.is_self && !a.organizer && a.resource != Some(true))
+            .filter_map(|a| a.email.clone())
+            .collect(),
+    };
+    let mut body = insert_body(&new, &random_request_id());
+    match &draft.edit_reminders {
+        Some(RemindersEdit::Defaults) => {
+            body["reminders"] = serde_json::json!({ "useDefault": true })
+        }
+        Some(RemindersEdit::Custom(minutes)) => {
+            body["reminders"] = serde_json::json!({
+                "useDefault": false,
+                "overrides": minutes
+                    .iter()
+                    .map(|m| serde_json::json!({ "method": "popup", "minutes": m }))
+                    .collect::<Vec<_>>(),
+            });
+        }
+        None => {
+            if let Some(r) = master.reminders {
+                body["reminders"] = r;
+            }
+        }
+    }
+    let mut create = url::Url::parse(api_base).expect("the Calendar API base is a valid URL");
+    create
+        .path_segments_mut()
+        .expect("the API base has no query or fragment, so its path segments are mutable")
+        .push("calendars")
+        .push(&calendar.remote_id)
+        .push("events");
+    create.query_pairs_mut().append_pair("fields", "id");
+    if !new.guests.is_empty() {
+        create.query_pairs_mut().append_pair("sendUpdates", "all");
+    }
+    let created = send_write(agent, "POST", &create, token, Some(&body), None)?;
+    if let Err(e) = truncate_series_at(agent, token, calendar, series, &cut, api_base) {
+        // Better to lose the new series than to leave two overlapping ones.
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&created)
+            && let Some(id) = v["id"].as_str()
+        {
+            let _ = delete_event_at(agent, token, calendar, id, api_base);
+        }
+        return Err(e);
+    }
+    Ok(())
+}
+
+fn truncate_series_at(
+    agent: &ureq::Agent,
+    token: &str,
+    calendar: &Calendar,
+    series: &str,
+    recurrence: &[String],
+    api_base: &str,
+) -> Result<(), ApiError> {
+    let url = event_url(api_base, &calendar.remote_id, series);
+    let body = serde_json::json!({ "recurrence": recurrence });
+    send_write(agent, "PATCH", &url, token, Some(&body), None).map(|_| ())
+}
+
+fn delete_following_at(
+    agent: &ureq::Agent,
+    token: &str,
+    calendar: &Calendar,
+    instance_id: &str,
+    api_base: &str,
+) -> Result<(), ApiError> {
+    let series = series_id(instance_id)
+        .ok_or_else(|| ApiError::InvalidRequest("this is not part of a repeating series".into()))?;
+    let until = instance_start(instance_id)
+        .and_then(until_before)
+        .ok_or_else(|| ApiError::InvalidRequest("this occurrence has an unreadable date".into()))?;
+    let mut url = event_url(api_base, &calendar.remote_id, series);
+    url.query_pairs_mut().append_pair("fields", "recurrence");
+    let master: SeriesMaster = get(agent, &url, token)?;
+    let (cut, _) = cut_recurrence(&master.recurrence, &until)?;
+    truncate_series_at(agent, token, calendar, series, &cut, api_base)
+}
+
+/// Deletes this occurrence and every later one by ending the series before it.
+pub fn delete_following(
+    agent: &ureq::Agent,
+    token: &str,
+    calendar: &Calendar,
+    instance_id: &str,
+) -> Result<(), ApiError> {
+    delete_following_at(agent, token, calendar, instance_id, BASE)
 }
 
 /// Public entry point for [`update_series_at`], in the system time zone.
@@ -2015,7 +2218,10 @@ mod tests {
             end: "2026-11-26T10:30:00Z".parse().unwrap(),
         };
         d.time_zone = Some("UTC".into());
-        d.series = Some(SeriesEdit { change_time: true });
+        d.series = Some(SeriesEdit {
+            change_time: true,
+            following: false,
+        });
         update_series_at(
             &agent(),
             "tok",
@@ -2026,7 +2232,10 @@ mod tests {
             &base,
         )
         .unwrap();
-        d.series = Some(SeriesEdit { change_time: false });
+        d.series = Some(SeriesEdit {
+            change_time: false,
+            following: false,
+        });
         update_series_at(
             &agent(),
             "tok",
@@ -2052,6 +2261,93 @@ mod tests {
         let body: serde_json::Value =
             serde_json::from_str(plain.split("\r\n\r\n").nth(1).unwrap()).unwrap();
         assert!(body.get("start").is_none() && body.get("end").is_none());
+    }
+
+    #[test]
+    fn instance_ids_give_the_cut_off_for_the_old_series() {
+        let timed = instance_start("s_20261126T093000Z").unwrap();
+        assert_eq!(until_before(timed).unwrap(), "20261126T092959Z");
+        let all_day = instance_start("s_20261126").unwrap();
+        assert_eq!(until_before(all_day).unwrap(), "20261125");
+        assert!(instance_start("plain").is_none());
+        assert_eq!(
+            rule_without_end("FREQ=WEEKLY;UNTIL=20270101T000000Z;BYDAY=MO"),
+            "FREQ=WEEKLY;BYDAY=MO"
+        );
+    }
+
+    #[test]
+    fn cutting_a_series_refuses_counted_rules_and_keeps_other_lines() {
+        let lines = vec![
+            "RRULE:FREQ=DAILY;UNTIL=20271231".to_string(),
+            "EXDATE:20261201T093000Z".to_string(),
+        ];
+        let (cut, rule) = cut_recurrence(&lines, "20261125").unwrap();
+        assert_eq!(cut[0], "RRULE:FREQ=DAILY;UNTIL=20261125");
+        assert_eq!(cut[1], lines[1]);
+        assert_eq!(rule, "FREQ=DAILY");
+        let counted = vec!["RRULE:FREQ=DAILY;COUNT=10".to_string()];
+        assert!(matches!(
+            cut_recurrence(&counted, "20261125"),
+            Err(ApiError::InvalidRequest(_))
+        ));
+        assert!(cut_recurrence(&[], "20261125").is_err());
+    }
+
+    #[test]
+    fn editing_following_creates_a_new_series_then_cuts_the_old_one() {
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let base = format!("http://{}/calendar/v3", listener.local_addr().unwrap());
+        let master = r#"{"recurrence":["RRULE:FREQ=DAILY"],"description":"notes",
+            "attendees":[{"email":"me@x","self":true,"organizer":true},{"email":"ann@x"}],
+            "reminders":{"useDefault":false,"overrides":[{"method":"popup","minutes":5}]}}"#;
+        let server = thread::spawn(move || {
+            let get = serve_ok(&listener, master);
+            let create = serve_ok(&listener, r#"{"id":"newseries"}"#);
+            let patch = serve_ok(&listener, "{}");
+            (get, create, patch)
+        });
+        let mut d = draft();
+        d.title = "Standup".into();
+        d.when = When::Timed {
+            start: "2026-11-26T10:00:00Z".parse().unwrap(),
+            end: "2026-11-26T10:30:00Z".parse().unwrap(),
+        };
+        d.time_zone = Some("UTC".into());
+        d.series = Some(SeriesEdit {
+            change_time: true,
+            following: true,
+        });
+        update_series_at(
+            &agent(),
+            "tok",
+            &cal(),
+            "series_20261126T093000Z",
+            &d,
+            &jiff::tz::TimeZone::UTC,
+            &base,
+        )
+        .unwrap();
+        let (get, create, patch) = server.join().unwrap();
+        assert!(get.starts_with("GET ") && get.contains("/events/series?"));
+        assert!(create.starts_with("POST ") && create.contains("sendUpdates=all"));
+        let body = |r: &str| -> serde_json::Value {
+            serde_json::from_str(r.split("\r\n\r\n").nth(1).unwrap()).unwrap()
+        };
+        let new = body(&create);
+        assert_eq!(new["recurrence"][0], "RRULE:FREQ=DAILY");
+        assert_eq!(new["start"]["dateTime"], "2026-11-26T10:00:00Z");
+        assert_eq!(new["description"], "notes");
+        assert_eq!(new["attendees"].as_array().unwrap().len(), 1);
+        assert_eq!(new["reminders"]["overrides"][0]["minutes"], 5);
+        assert!(patch.starts_with("PATCH ") && patch.contains("/events/series "));
+        assert_eq!(
+            body(&patch)["recurrence"][0],
+            "RRULE:FREQ=DAILY;UNTIL=20261126T092959Z"
+        );
     }
 
     #[test]

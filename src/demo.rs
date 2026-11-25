@@ -21,7 +21,9 @@ struct DemoWrites {
     edited: HashMap<(String, String), Event>,
     deleted: HashSet<(String, String)>,
     /// Whole-series edits, by (calendar, series id).
-    series: HashMap<(String, String), EventDraft>,
+    series: HashMap<(String, String), (EventDraft, Option<String>)>,
+    /// Series cut by "delete this and following": from this occurrence id on, they are gone.
+    cut: HashMap<(String, String), String>,
     next_id: u64,
 }
 
@@ -32,11 +34,18 @@ impl DemoWrites {
                 self.deleted
                     .contains(&(calendar_id.to_string(), id.to_string()))
             };
-            !gone(&e.id) && !series_id(&e.id).is_some_and(gone)
+            let cut = series_id(&e.id).is_some_and(|s| {
+                self.cut
+                    .get(&(calendar_id.to_string(), s.to_string()))
+                    .is_some_and(|from| e.id.as_str() >= from.as_str())
+            });
+            !gone(&e.id) && !series_id(&e.id).is_some_and(gone) && !cut
         });
         for e in events.iter_mut() {
             if let Some(draft) = series_id(&e.id)
                 .and_then(|s| self.series.get(&(calendar_id.to_string(), s.to_string())))
+                .filter(|(_, from)| from.as_ref().is_none_or(|f| e.id.as_str() >= f.as_str()))
+                .map(|(d, _)| d)
             {
                 e.title = draft.title.clone();
                 e.location = draft.location.clone().filter(|l| !l.is_empty());
@@ -230,9 +239,16 @@ fn run(rx: mpsc::Receiver<Command>, tx: async_channel::Sender<SyncEvent>) {
                 draft,
             } => {
                 if let Some(series) = series_id(&event_id) {
-                    writes
-                        .series
-                        .insert((calendar.id.clone(), series.to_string()), *draft);
+                    writes.series.insert(
+                        (calendar.id.clone(), series.to_string()),
+                        (
+                            *draft.clone(),
+                            draft
+                                .series
+                                .is_some_and(|s| s.following)
+                                .then(|| event_id.clone()),
+                        ),
+                    );
                 }
                 emit(SyncEvent::WriteFinished {
                     ticket,
@@ -264,6 +280,22 @@ fn run(rx: mpsc::Receiver<Command>, tx: async_channel::Sender<SyncEvent>) {
                     ticket,
                     account: from.account,
                     result: Ok(Some(Box::new(moved))),
+                });
+            }
+            Command::DeleteFollowing {
+                ticket,
+                calendar,
+                event_id,
+            } => {
+                if let Some(series) = series_id(&event_id) {
+                    writes
+                        .cut
+                        .insert((calendar.id.clone(), series.to_string()), event_id);
+                }
+                emit(SyncEvent::WriteFinished {
+                    ticket,
+                    account: calendar.account,
+                    result: Ok(None),
                 });
             }
             Command::DeleteEvent {

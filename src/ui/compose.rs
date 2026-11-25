@@ -646,9 +646,35 @@ pub struct EditorView {
     /// The event is one occurrence of a series you organise, so the edit can cover them all.
     in_series: bool,
     /// The edit and delete apply to the whole series.
-    whole_series: bool,
+    scope: Scope,
     error: Option<String>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// Which occurrences of a repeating series an edit or delete covers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Scope {
+    One,
+    Following,
+    All,
+}
+
+impl Scope {
+    fn next(self) -> Self {
+        match self {
+            Scope::One => Scope::Following,
+            Scope::Following => Scope::All,
+            Scope::All => Scope::One,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Scope::One => "This event only ▸",
+            Scope::Following => "This and following events ▸",
+            Scope::All => "All events in the series ▸",
+        }
+    }
 }
 
 impl EventEmitter<ComposeEvent> for EditorView {}
@@ -698,7 +724,7 @@ impl EditorView {
             target_calendar_id: event.calendar_id.clone(),
             can_move: event.user_organizes() && !event.is_recurring_instance(),
             in_series: event.user_organizes() && event.is_recurring_instance(),
-            whole_series: false,
+            scope: Scope::One,
             error: None,
             _subscriptions: subs,
         }
@@ -719,7 +745,7 @@ impl EditorView {
     }
 
     fn toggle_scope(&mut self, cx: &mut Context<Self>) {
-        self.whole_series = !self.whole_series;
+        self.scope = self.scope.next();
         self.confirm_delete = false;
         cx.notify();
     }
@@ -812,11 +838,16 @@ impl EditorView {
             rrule: None,
             edit_guests,
             edit_reminders,
-            series: (self.in_series && self.whole_series).then_some(SeriesEdit {
+            series: (self.in_series && self.scope != Scope::One).then_some(SeriesEdit {
                 change_time: matches!(when, When::Timed { .. }) && when != self.original_when,
+                following: self.scope == Scope::Following,
             }),
         };
-        let whole_series = self.in_series && self.whole_series;
+        let scope = if self.in_series {
+            self.scope
+        } else {
+            Scope::One
+        };
         let (calendar_id, event_id) = (self.calendar_id.clone(), self.event_id.clone());
         let target_id = self.target_calendar_id.clone();
         let ok = self.store.update(cx, |store, cx| {
@@ -826,7 +857,7 @@ impl EditorView {
             if !store.can_write(&calendar) {
                 return false;
             }
-            let ok = if whole_series {
+            let ok = if scope != Scope::One {
                 store.update_series(&calendar, &event_id, draft)
             } else if target_id != calendar_id
                 && let Some(target) = store.calendar(&target_id).cloned()
@@ -855,7 +886,11 @@ impl EditorView {
             cx.notify();
             return;
         }
-        let whole_series = self.in_series && self.whole_series;
+        let scope = if self.in_series {
+            self.scope
+        } else {
+            Scope::One
+        };
         let (calendar_id, event_id) = (self.calendar_id.clone(), self.event_id.clone());
         let ok = self.store.update(cx, |store, cx| {
             let Some(calendar) = store.calendar(&calendar_id).cloned() else {
@@ -864,7 +899,9 @@ impl EditorView {
             if !store.can_write(&calendar) {
                 return false;
             }
-            let ok = if whole_series {
+            let ok = if scope == Scope::Following {
+                store.delete_following(&calendar, &event_id)
+            } else if scope == Scope::All {
                 store.delete_series(&calendar, &event_id)
             } else {
                 store.delete_event(&calendar, &event_id)
@@ -955,7 +992,7 @@ impl Render for EditorView {
         let can_pick_calendar = self.can_move && self.move_targets(cx).len() > 1;
         let error = self.error.clone();
         let confirm = self.confirm_delete;
-        let whole_series_now = self.whole_series;
+        let scope_now = self.scope;
 
         backdrop()
             .on_mouse_down(
@@ -997,11 +1034,7 @@ impl Render for EditorView {
                             )
                             .child(button(
                                 "editor-scope",
-                                if whole_series_now {
-                                    "All events in the series ▸"
-                                } else {
-                                    "This event only ▸"
-                                },
+                                scope_now.label(),
                                 ButtonStyle::Secondary,
                                 Some(Box::new(cx.listener(|this, _: &ClickEvent, _, cx| {
                                     this.toggle_scope(cx)
@@ -1057,11 +1090,13 @@ impl Render for EditorView {
                             .justify_between()
                             .child(button(
                                 "editor-delete",
-                                match (confirm, whole_series_now) {
-                                    (true, true) => "Click again to delete the series",
-                                    (true, false) => "Click again to delete",
-                                    (false, true) => "Delete series",
-                                    (false, false) => "Delete",
+                                match (confirm, scope_now) {
+                                    (true, Scope::All) => "Click again to delete the series",
+                                    (true, Scope::Following) => "Click again to delete these",
+                                    (true, Scope::One) => "Click again to delete",
+                                    (false, Scope::All) => "Delete series",
+                                    (false, Scope::Following) => "Delete this and following",
+                                    (false, Scope::One) => "Delete",
                                 },
                                 ButtonStyle::Danger,
                                 Some(Box::new(
