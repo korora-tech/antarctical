@@ -61,6 +61,7 @@ Popup reminders from Google become desktop notifications (org.freedesktop.Notifi
 
 - **Defaults:** a calendar's default reminders apply to timed events that use defaults.
 - **Skipped:** declined events, and events on calendars hidden in the sidebar, never notify. A reminder that came due while Antarctical was not running is still shown for up to 10 minutes.
+- **Actions:** Join opens the video call; Snooze 5 min shows the reminder again after five minutes unless the event is over by then. Snoozes live in memory only, so quitting cancels them. Servers that do not show notification actions just show the plain notification.
 - **Off switch:** Settings → Preferences.
 
 ## Further reference

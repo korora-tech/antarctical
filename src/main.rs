@@ -20,6 +20,7 @@ mod ui;
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{App, AppContext, Entity, QuitMode};
@@ -233,6 +234,7 @@ fn main() {
 /// Every 20 s: fire due reminders and refresh the tray (date and "what's next" change with time).
 fn start_minute_tasks(store: Entity<Store>, tray: Option<Rc<TrayPush>>, cx: &mut App) {
     let fired = Rc::new(RefCell::new(HashSet::<String>::new()));
+    let snoozes = Arc::new(reminders::Snoozes::default());
     cx.spawn(async move |cx| {
         loop {
             cx.update(|cx| {
@@ -252,20 +254,10 @@ fn start_minute_tasks(store: Entity<Store>, tray: Option<Rc<TrayPush>>, cx: &mut
                     );
                     let due =
                         reminders::due(events, Timestamp::now(), &tz, &mut fired.borrow_mut());
-                    for d in due {
-                        // notify-rust blocks on D-Bus; keep it off the UI thread.
-                        cx.background_spawn(async move {
-                            let mut n = notify_rust::Notification::new();
-                            n.appname("Antarctical")
-                                .summary(&d.title)
-                                .body(&d.body)
-                                .icon(branding::APP_ID)
-                                .timeout(notify_rust::Timeout::Milliseconds(15_000));
-                            if let Err(e) = n.show() {
-                                eprintln!("antarctical: notification failed: {e}");
-                            }
-                        })
-                        .detach();
+                    let ready = snoozes.take_ready(Timestamp::now(), &tz);
+                    for d in due.into_iter().chain(ready) {
+                        // notify-rust blocks on D-Bus; each notification gets its own thread.
+                        reminders::show(d, snoozes.clone());
                     }
                 }
             });

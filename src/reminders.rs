@@ -1,6 +1,7 @@
 //! Popup reminders from Google's reminder settings, shown as desktop notifications.
 
 use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp};
@@ -11,11 +12,95 @@ use crate::model::Event;
 /// this old, and never after its event has started plus this much.
 const STALE_AFTER: SignedDuration = SignedDuration::from_mins(10);
 
-#[derive(Debug, PartialEq, Eq)]
+/// How long "Snooze" waits before the reminder shows again.
+pub const SNOOZE: SignedDuration = SignedDuration::from_mins(5);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Due {
     pub title: String,
     pub body: String,
     pub meet_link: Option<String>,
+    pub start: Timestamp,
+    pub end: Timestamp,
+    pub all_day: bool,
+    pub location: Option<String>,
+}
+
+/// Reminders the user snoozed, waiting to show again.
+#[derive(Default)]
+pub struct Snoozes(Mutex<Vec<(Timestamp, Due)>>);
+
+impl Snoozes {
+    /// Shows `due` again at `until`.
+    pub fn add(&self, until: Timestamp, due: Due) {
+        self.0
+            .lock()
+            .expect("the snooze list is never held across a panic")
+            .push((until, due));
+    }
+
+    /// Snoozed reminders whose time has come. Ones whose event is already over are dropped.
+    pub fn take_ready(&self, now: Timestamp, tz: &TimeZone) -> Vec<Due> {
+        let mut list = self
+            .0
+            .lock()
+            .expect("the snooze list is never held across a panic");
+        let mut ready = vec![];
+        list.retain(|(at, due)| {
+            if *at > now {
+                return true;
+            }
+            if due.end > now {
+                let mut again = due.clone();
+                again.body = body_at(
+                    again.all_day,
+                    again.location.as_deref(),
+                    now,
+                    again.start,
+                    again.end,
+                    tz,
+                );
+                ready.push(again);
+            }
+            false
+        });
+        ready
+    }
+}
+
+/// Shows a reminder as a desktop notification with Join (when there is a video call) and Snooze
+/// buttons. Returns at once; the notification is handled on its own thread.
+pub fn show(due: Due, snoozes: Arc<Snoozes>) {
+    std::thread::spawn(move || {
+        let mut n = notify_rust::Notification::new();
+        n.appname("Antarctical")
+            .summary(&due.title)
+            .body(&due.body)
+            .icon(crate::branding::APP_ID)
+            .timeout(notify_rust::Timeout::Milliseconds(30_000));
+        if due.meet_link.is_some() {
+            n.action("join", "Join");
+        }
+        n.action("snooze", "Snooze 5 min");
+        let handle = match n.show() {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("antarctical: notification failed: {e}");
+                return;
+            }
+        };
+        handle.wait_for_action(|action| match action {
+            "join" => {
+                if let Some(link) = &due.meet_link
+                    && let Err(e) = open::that_detached(link)
+                {
+                    eprintln!("antarctical: could not open the video call: {e}");
+                }
+            }
+            "snooze" => snoozes.add(Timestamp::now() + SNOOZE, due.clone()),
+            _ => {}
+        });
+    });
 }
 
 /// Reminders due at `now` that have not fired yet; marks them fired.
@@ -45,17 +130,35 @@ pub fn due<'a>(
             }
             out.push(Due {
                 title: e.title.clone(),
-                body: body(e, now, span.start, span.end, tz),
+                body: body_at(
+                    e.is_all_day(),
+                    e.location.as_deref(),
+                    now,
+                    span.start,
+                    span.end,
+                    tz,
+                ),
                 meet_link: e.meet_link.clone(),
+                start: span.start,
+                end: span.end,
+                all_day: e.is_all_day(),
+                location: e.location.clone(),
             });
         }
     }
     out
 }
 
-fn body(e: &Event, now: Timestamp, start: Timestamp, end: Timestamp, tz: &TimeZone) -> String {
+fn body_at(
+    all_day: bool,
+    location: Option<&str>,
+    now: Timestamp,
+    start: Timestamp,
+    end: Timestamp,
+    tz: &TimeZone,
+) -> String {
     let mins = start.duration_since(now).as_secs().div_euclid(60);
-    let when = if e.is_all_day() {
+    let when = if all_day {
         "Today".to_string()
     } else if mins > 0 {
         let fmt = |t: Timestamp| t.to_zoned(tz.clone()).strftime("%H:%M").to_string();
@@ -68,7 +171,7 @@ fn body(e: &Event, now: Timestamp, start: Timestamp, end: Timestamp, tz: &TimeZo
     } else {
         "Starting now".to_string()
     };
-    match &e.location {
+    match location {
         Some(loc) => format!("{when} · {loc}"),
         None => when,
     }
@@ -137,6 +240,33 @@ mod tests {
         }];
         let now: Timestamp = "2026-10-21T09:21:00Z".parse().unwrap();
         assert!(due([&d], now, &tz, &mut fired).is_empty());
+    }
+
+    #[test]
+    fn snoozed_reminders_come_back_until_the_event_is_over() {
+        let tz = TimeZone::UTC;
+        let e = event("2026-10-21T09:30:00Z", vec![10]);
+        let now: Timestamp = "2026-10-21T09:21:00Z".parse().unwrap();
+        let due = due([&e], now, &tz, &mut HashSet::new()).remove(0);
+        let snoozes = Snoozes::default();
+        snoozes.add(now + SNOOZE, due.clone());
+        // Not yet.
+        assert!(
+            snoozes
+                .take_ready(now + SignedDuration::from_mins(4), &tz)
+                .is_empty()
+        );
+        // Due: shown again with the time left worked out afresh, and only once.
+        let later = now + SNOOZE;
+        let again = snoozes.take_ready(later, &tz);
+        assert_eq!(again.len(), 1);
+        assert_eq!(again[0].body, "In 4 min · 09:30–09:45 · Room 4");
+        assert!(snoozes.take_ready(later, &tz).is_empty());
+        // Snoozed past the end of the event: dropped.
+        snoozes.add(now, due);
+        let over: Timestamp = "2026-10-21T09:50:00Z".parse().unwrap();
+        assert!(snoozes.take_ready(over, &tz).is_empty());
+        assert!(snoozes.take_ready(over, &tz).is_empty());
     }
 
     #[test]
