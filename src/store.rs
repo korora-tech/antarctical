@@ -39,6 +39,11 @@ enum WriteKind {
         event: Event,
     },
     Delete(Event),
+    /// Moved to another calendar (`event.calendar_id`), possibly with edits applied.
+    Move {
+        previous: Event,
+        event: Event,
+    },
 }
 
 /// Shows an edit's guest and reminder changes locally, as Google will store them.
@@ -83,6 +88,20 @@ fn apply_guest_and_reminder_edits(event: &mut Event, draft: &EventDraft, calenda
         }
         Some(RemindersEdit::Custom(minutes)) => event.reminders = minutes.clone(),
     }
+}
+
+/// The event as it will look once `draft` is applied to it.
+fn edited_copy(previous: &Event, draft: &EventDraft, calendar: &Calendar) -> Event {
+    let mut event = previous.clone();
+    event.title = draft.title.clone();
+    event.when = draft.when;
+    event.location = draft.location.clone().filter(|l| !l.is_empty());
+    // Like the patch sent to Google, an absent description leaves the old one alone.
+    if let Some(description) = &draft.description {
+        event.description = Some(description.clone()).filter(|d| !d.is_empty());
+    }
+    apply_guest_and_reminder_edits(&mut event, draft, calendar);
+    event
 }
 
 /// Prefix of the temporary ids given to events that Google has not confirmed yet.
@@ -427,15 +446,7 @@ impl Store {
         let Some(previous) = self.find_event(&calendar.id, event_id).cloned() else {
             return false;
         };
-        let mut event = previous.clone();
-        event.title = draft.title.clone();
-        event.when = draft.when;
-        event.location = draft.location.clone().filter(|l| !l.is_empty());
-        // Like the patch sent to Google, an absent description leaves the old one alone.
-        if let Some(description) = &draft.description {
-            event.description = Some(description.clone()).filter(|d| !d.is_empty());
-        }
-        apply_guest_and_reminder_edits(&mut event, &draft, calendar);
+        let event = edited_copy(&previous, &draft, calendar);
         let ticket = self.ticket();
         self.insert_event(event.clone());
         self.pending_writes.insert(
@@ -450,6 +461,60 @@ impl Store {
             calendar: calendar.clone(),
             event_id: event_id.to_string(),
             draft: Box::new(draft),
+        });
+        true
+    }
+
+    /// Moves an event to another calendar of the same account (applying `draft`, when given, as
+    /// well). Returns false when that is not possible: another account, a read-only target, a
+    /// repeating occurrence, an event you do not organise, or one that is busy.
+    pub fn move_event(
+        &mut self,
+        from: &Calendar,
+        event_id: &str,
+        to: &Calendar,
+        draft: Option<EventDraft>,
+    ) -> bool {
+        if from.id == to.id
+            || from.account != to.account
+            || !self.can_write(from)
+            || !self.can_write(to)
+            || self.is_pending_event(event_id)
+            || self.write_in_flight(&from.id, event_id)
+            || self.write_in_flight(&to.id, event_id)
+        {
+            return false;
+        }
+        let Some(previous) = self.find_event(&from.id, event_id).cloned() else {
+            return false;
+        };
+        if previous.is_recurring_instance() || !previous.user_organizes() {
+            return false;
+        }
+        let mut event = match &draft {
+            Some(draft) => edited_copy(&previous, draft, to),
+            None => previous.clone(),
+        };
+        event.calendar_id = to.id.clone();
+        self.remove_event(&from.id, event_id);
+        let ticket = self.ticket();
+        self.insert_event(event.clone());
+        self.pending_writes.insert(
+            ticket,
+            PendingWrite {
+                calendar_id: from.id.clone(),
+                kind: WriteKind::Move {
+                    previous: previous.clone(),
+                    event,
+                },
+            },
+        );
+        self.send(Command::MoveEvent {
+            ticket,
+            from: from.clone(),
+            event: Box::new(previous),
+            to: to.clone(),
+            draft: draft.map(Box::new),
         });
         true
     }
@@ -480,12 +545,15 @@ impl Store {
 
     fn write_in_flight(&self, calendar_id: &str, event_id: &str) -> bool {
         self.pending_writes.values().any(|w| {
-            w.calendar_id == calendar_id
-                && match &w.kind {
-                    WriteKind::Create(e) => e.id == event_id,
-                    WriteKind::Update { event, .. } => event.id == event_id,
-                    WriteKind::Delete(e) => e.id == event_id,
+            let here = w.calendar_id == calendar_id;
+            match &w.kind {
+                WriteKind::Create(e) => here && e.id == event_id,
+                WriteKind::Update { event, .. } => here && event.id == event_id,
+                WriteKind::Delete(e) => here && e.id == event_id,
+                WriteKind::Move { event, .. } => {
+                    event.id == event_id && (here || event.calendar_id == calendar_id)
                 }
+            }
         })
     }
 
@@ -503,6 +571,7 @@ impl Store {
             WriteKind::Create(_) => "create the event",
             WriteKind::Update { .. } => "save the event",
             WriteKind::Delete(_) => "delete the event",
+            WriteKind::Move { .. } => "move the event",
         };
         match (write.kind, result) {
             (WriteKind::Create(temp), Ok(Some(real))) => {
@@ -513,6 +582,11 @@ impl Store {
                 self.remove_event(&cal, &previous.id);
                 self.insert_event(*real);
             }
+            (WriteKind::Move { previous, event }, Ok(Some(real))) => {
+                self.remove_event(&cal, &previous.id);
+                self.remove_event(&event.calendar_id, &event.id);
+                self.insert_event(*real);
+            }
             (_, Ok(_)) => {}
             (kind, Err(failure)) => {
                 match kind {
@@ -521,6 +595,12 @@ impl Store {
                     }
                     WriteKind::Update { previous, .. } => self.insert_event(previous),
                     WriteKind::Delete(event) => self.insert_event(event),
+                    WriteKind::Move { previous, event } => {
+                        self.remove_event(&event.calendar_id, &event.id);
+                        self.insert_event(previous);
+                        // The move itself may have gone through before a later step failed.
+                        self.send(Command::Refresh);
+                    }
                 }
                 self.problem = Some(if failure.missing_scope {
                     format!(
@@ -541,12 +621,25 @@ impl Store {
     /// not make them flicker away.
     fn overlay_pending(&self, calendar_id: &str, month: Date, events: &mut Vec<Event>) {
         let tz = TimeZone::system();
-        for w in self
-            .pending_writes
-            .values()
-            .filter(|w| w.calendar_id == calendar_id)
-        {
+        for w in self.pending_writes.values() {
+            if let WriteKind::Move { previous, event } = &w.kind {
+                // A move touches two calendars: it leaves the old one and joins the new one.
+                if w.calendar_id == calendar_id {
+                    events.retain(|e| e.id != previous.id);
+                }
+                if event.calendar_id == calendar_id {
+                    events.retain(|e| e.id != event.id);
+                    if event.in_month(month, &tz) {
+                        events.push(event.clone());
+                    }
+                }
+                continue;
+            }
+            if w.calendar_id != calendar_id {
+                continue;
+            }
             match &w.kind {
+                WriteKind::Move { .. } => {}
                 WriteKind::Create(e) => {
                     if e.in_month(month, &tz) {
                         events.push(e.clone());
@@ -1493,6 +1586,127 @@ mod tests {
                 .contains("create the event: boom")
         );
         assert_eq!(s.rsvp_reauth.as_deref(), Some("me@x"));
+    }
+
+    fn with_second_calendar() -> (
+        Store,
+        std::sync::mpsc::Receiver<Command>,
+        Calendar,
+        Calendar,
+    ) {
+        let (mut s, rx, a) = with_one_event();
+        let mut calendars = s.calendars.clone();
+        let mut a2 = a.clone();
+        a2.id = "a2".into();
+        a2.remote_id = "a2".into();
+        a2.name = "A2".into();
+        a2.primary = false;
+        calendars.push(a2.clone());
+        s.apply(SyncEvent::Calendars(calendars));
+        s.apply(SyncEvent::Month {
+            calendar_id: "a2".into(),
+            month: date(2026, 10, 1),
+            events: vec![],
+        });
+        (s, rx, a, a2)
+    }
+
+    #[test]
+    fn moving_an_event_shows_at_once_and_is_confirmed_by_googles_copy() {
+        let (mut s, rx, a, a2) = with_second_calendar();
+        assert!(s.move_event(&a, "old", &a2, Some(draft("Renamed"))));
+        assert!(s.find_event("a", "old").is_none());
+        let moved = s.find_event("a2", "old").unwrap();
+        assert_eq!(moved.title, "Renamed");
+        assert_eq!(moved.calendar_id, "a2");
+        // One write at a time per event, on either calendar.
+        assert!(!s.move_event(&a2, "old", &a, None));
+        assert!(!s.update_event(&a2, "old", draft("Again")));
+        let Ok(Command::MoveEvent {
+            ticket, to, draft, ..
+        }) = rx.try_recv()
+        else {
+            panic!("expected a move command")
+        };
+        assert_eq!(to.id, "a2");
+        assert_eq!(draft.unwrap().title, "Renamed");
+
+        // A refresh of either calendar that predates the write must not undo it.
+        s.apply(SyncEvent::Month {
+            calendar_id: "a".into(),
+            month: date(2026, 10, 1),
+            events: vec![all_day("a", "old", date(2026, 10, 5), date(2026, 10, 6))],
+        });
+        s.apply(SyncEvent::Month {
+            calendar_id: "a2".into(),
+            month: date(2026, 10, 1),
+            events: vec![],
+        });
+        assert!(s.find_event("a", "old").is_none());
+        assert!(s.find_event("a2", "old").is_some());
+
+        let mut real = all_day("a2", "old", date(2026, 10, 5), date(2026, 10, 6));
+        real.title = "From Google".into();
+        s.apply(SyncEvent::WriteFinished {
+            ticket,
+            account: "me@x".into(),
+            result: Ok(Some(Box::new(real))),
+        });
+        assert_eq!(s.find_event("a2", "old").unwrap().title, "From Google");
+        assert!(s.find_event("a", "old").is_none());
+    }
+
+    #[test]
+    fn a_failed_move_puts_the_event_back_and_refreshes() {
+        let (mut s, rx, a, a2) = with_second_calendar();
+        assert!(s.move_event(&a, "old", &a2, None));
+        let Ok(Command::MoveEvent { ticket, .. }) = rx.try_recv() else {
+            panic!()
+        };
+        s.apply(SyncEvent::WriteFinished {
+            ticket,
+            account: "me@x".into(),
+            result: Err(WriteFailure {
+                message: "boom".into(),
+                missing_scope: false,
+            }),
+        });
+        assert!(s.find_event("a", "old").is_some());
+        assert!(s.find_event("a2", "old").is_none());
+        assert!(
+            s.problem
+                .as_deref()
+                .unwrap()
+                .contains("move the event: boom")
+        );
+        assert!(matches!(rx.try_recv(), Ok(Command::Refresh)));
+    }
+
+    #[test]
+    fn events_only_move_where_google_allows_it() {
+        let (mut s, rx, a, a2) = with_second_calendar();
+        // Another account.
+        let other = s.calendar("b").cloned().unwrap();
+        assert!(!s.move_event(&a, "old", &other, None));
+        // Same calendar.
+        assert!(!s.move_event(&a, "old", &a, None));
+        // A read-only target.
+        let mut read_only = a2.clone();
+        read_only.writable = false;
+        assert!(!s.move_event(&a, "old", &read_only, None));
+        // One occurrence of a series.
+        s.apply(SyncEvent::Month {
+            calendar_id: "a".into(),
+            month: date(2026, 10, 1),
+            events: vec![all_day(
+                "a",
+                "series_20261005",
+                date(2026, 10, 5),
+                date(2026, 10, 6),
+            )],
+        });
+        assert!(!s.move_event(&a, "series_20261005", &a2, None));
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

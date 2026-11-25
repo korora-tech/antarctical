@@ -140,6 +140,12 @@ pub struct Event {
 }
 
 impl Event {
+    /// Whether this is one occurrence of a repeating series. Google names those
+    /// `<series id>_<date>` (or `_<date>T<time>Z`); plain ids never contain an underscore.
+    pub fn is_recurring_instance(&self) -> bool {
+        self.id.contains('_')
+    }
+
     /// The current user's RSVP, when they are an attendee.
     pub fn self_response(&self) -> Option<Response> {
         self.attendees

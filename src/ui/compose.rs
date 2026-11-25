@@ -637,6 +637,10 @@ pub struct EditorView {
     when_locked: bool,
     original_when: When,
     confirm_delete: bool,
+    /// The calendar the event will be saved to; differs from `calendar_id` after a pick.
+    target_calendar_id: String,
+    /// Moving needs a plain event you organise (not one occurrence of a series).
+    can_move: bool,
     error: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
@@ -685,8 +689,33 @@ impl EditorView {
             when_locked: when_text.is_none(),
             original_when: event.when,
             confirm_delete: false,
+            target_calendar_id: event.calendar_id.clone(),
+            can_move: event.user_organizes() && !event.is_recurring_instance(),
             error: None,
             _subscriptions: subs,
+        }
+    }
+
+    /// The calendars this event can move to: writable ones of the same account.
+    fn move_targets(&self, cx: &App) -> Vec<Calendar> {
+        let store = self.store.read(cx);
+        let Some(current) = store.calendar(&self.calendar_id) else {
+            return vec![];
+        };
+        store
+            .calendars
+            .iter()
+            .filter(|c| c.account == current.account && store.can_write(c))
+            .cloned()
+            .collect()
+    }
+
+    /// Picks the next calendar in the list.
+    fn cycle_calendar(&mut self, cx: &mut Context<Self>) {
+        let targets = self.move_targets(cx);
+        if let Some(i) = targets.iter().position(|c| c.id == self.target_calendar_id) {
+            self.target_calendar_id = targets[(i + 1) % targets.len()].id.clone();
+            cx.notify();
         }
     }
 
@@ -771,6 +800,7 @@ impl EditorView {
             edit_reminders,
         };
         let (calendar_id, event_id) = (self.calendar_id.clone(), self.event_id.clone());
+        let target_id = self.target_calendar_id.clone();
         let ok = self.store.update(cx, |store, cx| {
             let Some(calendar) = store.calendar(&calendar_id).cloned() else {
                 return false;
@@ -778,7 +808,13 @@ impl EditorView {
             if !store.can_write(&calendar) {
                 return false;
             }
-            let ok = store.update_event(&calendar, &event_id, draft);
+            let ok = if target_id != calendar_id
+                && let Some(target) = store.calendar(&target_id).cloned()
+            {
+                store.move_event(&calendar, &event_id, &target, Some(draft))
+            } else {
+                store.update_event(&calendar, &event_id, draft)
+            };
             cx.notify();
             ok
         });
@@ -886,6 +922,11 @@ impl Render for EditorView {
                 }
             })
             .unwrap_or_default();
+        let target_label = store
+            .calendar(&self.target_calendar_id)
+            .map(|c| c.name.clone())
+            .unwrap_or_default();
+        let can_pick_calendar = self.can_move && self.move_targets(cx).len() > 1;
         let error = self.error.clone();
         let confirm = self.confirm_delete;
 
@@ -922,6 +963,26 @@ impl Render for EditorView {
                         div().text_size(px(12.0)).text_color(rgb(color)).child(text)
                     }))
                     .child(field("Location", self.location.clone()))
+                    .children(can_pick_calendar.then(|| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(rgb(MUTED))
+                                    .child("Calendar"),
+                            )
+                            .child(button(
+                                "editor-calendar",
+                                SharedString::from(format!("{target_label} ▸")),
+                                ButtonStyle::Secondary,
+                                Some(Box::new(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.cycle_calendar(cx)
+                                }))),
+                            ))
+                    }))
                     .child(if self.can_edit_guests {
                         field("Guests", self.guests.clone()).into_any_element()
                     } else {
