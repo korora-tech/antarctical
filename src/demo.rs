@@ -68,6 +68,9 @@ impl DemoWrites {
 }
 
 fn event_from_draft(calendar: &Calendar, id: String, draft: &EventDraft) -> Event {
+    if calendar.is_task_list() {
+        return crate::store::Store::event_from_draft(calendar, id, draft);
+    }
     Event {
         id,
         calendar_id: calendar.id.clone(),
@@ -299,6 +302,54 @@ fn run(rx: mpsc::Receiver<Command>, tx: async_channel::Sender<SyncEvent>) {
                     result: Ok(None),
                 });
             }
+            Command::SetTaskDone {
+                ticket,
+                calendar,
+                event_id,
+                done,
+            } => {
+                let key = (calendar.id.clone(), event_id.clone());
+                // The task as the demo currently holds it: edited before, created, or generated.
+                let current = writes
+                    .edited
+                    .get(&key)
+                    .or_else(|| {
+                        writes
+                            .created
+                            .iter()
+                            .find(|e| e.id == event_id && e.calendar_id == calendar.id)
+                    })
+                    .cloned()
+                    .or_else(|| {
+                        let date = event_id.strip_prefix("task-")?.parse::<Date>().ok()?;
+                        events_for(&calendar, date.first_of_month(), today, &tz)
+                            .into_iter()
+                            .find(|e| e.id == event_id)
+                    });
+                let result = match current {
+                    Some(mut task) => {
+                        task.kind = model::EventKind::Task { done };
+                        task.title = model::task_title(model::raw_task_title(&task.title), done);
+                        writes
+                            .created
+                            .retain(|e| !(e.id == event_id && e.calendar_id == calendar.id));
+                        if event_id.starts_with("demo-") {
+                            writes.created.push(task.clone());
+                        }
+                        writes.edited.insert(key, task.clone());
+                        Ok(Some(Box::new(task)))
+                    }
+                    None => Err(crate::sync::WriteFailure {
+                        message: "Task not found".into(),
+                        missing_scope: false,
+                    }),
+                };
+                emit(SyncEvent::WriteFinished {
+                    ticket,
+                    account: calendar.account,
+                    result,
+                });
+            }
             Command::DeleteEvent {
                 ticket,
                 calendar,
@@ -356,6 +407,17 @@ fn calendars() -> Vec<Calendar> {
         read_only(cal(PERSONAL, "holidays", "Holidays", 0x8e24aa, false)),
         cal(WORK, WORK, WORK, 0x7986cb, true),
         cal(WORK, "team", "Platform team", 0x33b679, false),
+        {
+            let mut tasks = cal(
+                PERSONAL,
+                &Calendar::task_list_remote_id("demo"),
+                "My Tasks",
+                0x4285f4,
+                false,
+            );
+            tasks.default_reminders = vec![];
+            tasks
+        },
     ]
 }
 
@@ -542,6 +604,22 @@ fn events_for(cal: &Calendar, month: Date, today: Date, tz: &TimeZone) -> Vec<Ev
                         "Late film",
                         timed(d, (22, 30), (23, 59)),
                     ));
+                }
+            }
+            _ if cal.is_task_list() => {
+                if wd == Weekday::Tuesday {
+                    let mut e = base(
+                        format!("task-{key}"),
+                        &model::task_title("Water the plants", d < today),
+                        When::AllDay {
+                            start: d,
+                            end: model::add_days(d, 1),
+                        },
+                    );
+                    e.kind = model::EventKind::Task { done: d < today };
+                    e.html_link = None;
+                    e.reminders = vec![];
+                    out.push(e);
                 }
             }
             "holidays" if d.day() == 1 => {

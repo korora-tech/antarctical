@@ -47,6 +47,8 @@ pub struct Parsed {
     pub calendar_hint: Option<String>,
     pub meet: bool,
     pub recurrence: Option<Recurrence>,
+    /// The text starts with `todo` or `task:`: it is a Google Task, not an event.
+    pub task: bool,
 }
 
 struct Tok {
@@ -75,7 +77,15 @@ pub fn parse(input: &str, now: &Zoned) -> Parsed {
         calendar_hint: None,
         meet: false,
         recurrence: None,
+        task: false,
     };
+
+    // A leading `todo` (or `todo:`, `task:`) makes it a task. A bare `task` is left alone: it
+    // starts plenty of event titles ("Task force sync").
+    if toks.len() > 1 && matches!(toks[0].lower.as_str(), "todo" | "todo:" | "task:") {
+        toks[0].used = true;
+        out.task = true;
+    }
 
     // Flags and tags.
     for t in toks.iter_mut() {
@@ -1102,5 +1112,19 @@ mod tests {
         ] {
             let _ = parse(s, &now());
         }
+    }
+
+    #[test]
+    fn a_leading_todo_marks_a_task_but_a_bare_task_does_not() {
+        let now = now();
+        let p = parse("todo Buy milk friday", &now);
+        assert!(p.task);
+        assert_eq!(p.title, "Buy milk");
+        assert!(parse("task: Call Sam", &now).task);
+        assert!(!parse("Task force sync friday", &now).task);
+        // Alone, it is just a title.
+        let p = parse("todo", &now);
+        assert!(!p.task);
+        assert_eq!(p.title, "todo");
     }
 }

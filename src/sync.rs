@@ -18,6 +18,7 @@ use jiff::{Timestamp, Zoned};
 
 use crate::google::api::{self, ApiError, EventDraft};
 use crate::google::oauth::{self, AuthError, ClientCredentials, TokenResponse};
+use crate::google::tasks;
 use crate::model;
 use crate::model::{Calendar, Event, Response};
 use crate::secrets::{SecretError, Secrets};
@@ -85,6 +86,13 @@ pub enum Command {
         event: Box<Event>,
         to: Calendar,
         draft: Option<Box<EventDraft>>,
+    },
+    /// Ticks a Google Task off, or back on.
+    SetTaskDone {
+        ticket: u64,
+        calendar: Calendar,
+        event_id: String,
+        done: bool,
     },
     /// Deletes one event (or one occurrence of a series).
     DeleteEvent {
@@ -163,6 +171,9 @@ pub enum SyncEvent {
         account: String,
         result: Result<Option<Box<Event>>, WriteFailure>,
     },
+    /// The account's token lacks the Google Tasks scope (it was authorised before tasks existed).
+    /// Signing in again grants it.
+    TasksNeedAccess(String),
     /// Completion of an optimistic RSVP update.
     ReplyFinished {
         calendar_id: String,
@@ -272,6 +283,8 @@ struct Worker {
     sign_in_purpose: Option<SignInPurpose>,
     sign_in_seq: u64,
     reply_enabled: BTreeSet<String>,
+    /// Accounts whose token lacks the Tasks scope; asked once, and skipped until they sign in again.
+    tasks_denied: BTreeSet<String>,
     auth: AuthState,
     /// The last keyring read failed (locked, no Secret Service); retried on Refresh.
     keyring_failed: bool,
@@ -302,6 +315,7 @@ impl Worker {
             sign_in_purpose: None,
             sign_in_seq: 0,
             reply_enabled,
+            tasks_denied: BTreeSet::new(),
             auth: AuthState::Starting,
             keyring_failed: false,
             sticky: BTreeMap::new(),
@@ -607,6 +621,14 @@ impl Worker {
             } => self.write(ticket, calendar, |agent, token, cal| {
                 api::delete_following(agent, token, cal, &event_id).map(|()| None)
             }),
+            Command::SetTaskDone {
+                ticket,
+                calendar,
+                event_id,
+                done,
+            } => self.write(ticket, calendar, |agent, token, cal| {
+                tasks::set_done(agent, token, cal, &event_id, done).map(|e| Some(Box::new(e)))
+            }),
             Command::DeleteEvent {
                 ticket,
                 calendar,
@@ -882,6 +904,8 @@ impl Worker {
             return;
         };
         self.sticky.remove(&email);
+        self.tasks_denied.remove(&email);
+        self.sticky.remove(&format!("tasks:{email}"));
         let access = Some(Access {
             token: tokens.access_token,
             expires: Instant::now() + Duration::from_secs(tokens.expires_in),
@@ -1026,6 +1050,8 @@ impl Worker {
         };
         self.cancel_rsvp_sign_in_for_account(email);
         let account = self.accounts.remove(i);
+        self.tasks_denied.remove(email);
+        self.sticky.remove(&format!("tasks:{email}"));
         if self.reply_enabled.remove(email) {
             self.emit(SyncEvent::ReplyAccess {
                 email: email.to_string(),
@@ -1162,7 +1188,8 @@ impl Worker {
             match self.with_token(&email, |agent, token| {
                 api::calendar_list(agent, token, &email)
             }) {
-                Ok(cals) => {
+                Ok(mut cals) => {
+                    cals.extend(self.task_lists(&email, &mut problems));
                     if let Some(a) = self.accounts.iter_mut().find(|a| a.email == email) {
                         a.calendars = cals;
                     }
@@ -1195,6 +1222,32 @@ impl Worker {
             self.emit(SyncEvent::Synced(Timestamp::now()));
         }
         self.emit(SyncEvent::Busy(false));
+    }
+
+    /// The Google Tasks lists of `email`, when its token can read them. Tasks are an extra: a
+    /// failure here is reported but never stops the calendars from loading.
+    fn task_lists(&mut self, email: &str, problems: &mut Vec<String>) -> Vec<Calendar> {
+        // The tasks scope comes with the editing opt-in; read-only accounts have no tasks.
+        if !self.reply_enabled.contains(email) || self.tasks_denied.contains(email) {
+            return vec![];
+        }
+        match self.with_token(email, |agent, token| tasks::task_lists(agent, token, email)) {
+            Ok(lists) => lists,
+            Err(CallError::Api(error)) if error.missing_scope() => {
+                self.tasks_denied.insert(email.to_string());
+                self.sticky.insert(
+                    format!("tasks:{email}"),
+                    format!("Google Tasks needs your permission for {email}. Sign in again to show tasks."),
+                );
+                self.emit(SyncEvent::TasksNeedAccess(email.to_string()));
+                vec![]
+            }
+            Err(CallError::Api(error)) => {
+                problems.push(format!("{email}: Google Tasks: {error}"));
+                vec![]
+            }
+            Err(_) => vec![],
+        }
     }
 
     fn fetch_missing(&mut self) {

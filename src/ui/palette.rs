@@ -43,6 +43,7 @@ impl PaletteView {
                     id: c.id.clone(),
                     name: c.name.clone(),
                     visible: s.is_visible(c),
+                    task_list: c.is_task_list(),
                 })
                 .collect();
             palette::entries(&sets, &calendars)

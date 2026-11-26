@@ -11,7 +11,9 @@ use jiff::tz::TimeZone;
 use crate::config::Prefs;
 use crate::google::api::{EventDraft, RemindersEdit, series_id};
 use crate::model;
-use crate::model::{Attendee, Calendar, Event, EventKind, Response, When};
+use crate::model::{
+    Attendee, Calendar, Event, EventKind, Response, When, raw_task_title, task_title,
+};
 use crate::sync::{AuthState, Command, SyncEvent, SyncHandle, WriteFailure};
 
 /// The account data source represented by a [`Store`].
@@ -127,6 +129,34 @@ pub fn shifted_when(old: &When, new: &When, tz: &TimeZone) -> When {
     When::Timed {
         start,
         end: start + length,
+    }
+}
+
+/// The task a draft for a Google Tasks list will become: all-day on its due date, not done.
+fn task_from_draft(calendar: &Calendar, id: String, draft: &EventDraft) -> Event {
+    let start = match draft.when {
+        When::AllDay { start, .. } => start,
+        When::Timed { start, .. } => start.to_zoned(TimeZone::system()).date(),
+    };
+    Event {
+        id,
+        calendar_id: calendar.id.clone(),
+        title: task_title(raw_task_title(&draft.title), false),
+        when: When::AllDay {
+            start,
+            end: start.tomorrow().unwrap_or(start),
+        },
+        color: None,
+        location: None,
+        description: draft.description.clone().filter(|d| !d.is_empty()),
+        html_link: None,
+        meet_link: None,
+        organizer: None,
+        attendees: vec![],
+        reminders: vec![],
+        tentative: false,
+        kind: EventKind::Task { done: false },
+        time_zone: None,
     }
 }
 
@@ -393,6 +423,9 @@ impl Store {
     /// The event as the UI would show it for `draft`: used for the optimistic copy and for
     /// previews while typing.
     pub fn event_from_draft(calendar: &Calendar, id: String, draft: &EventDraft) -> Event {
+        if calendar.is_task_list() {
+            return task_from_draft(calendar, id, draft);
+        }
         Event {
             id,
             calendar_id: calendar.id.clone(),
@@ -731,6 +764,44 @@ impl Store {
         true
     }
 
+    /// Ticks a task off (or back on) at once; Google confirms in the background and the tick is
+    /// undone, with a message, if it refuses. Returns false for anything that is not a task this
+    /// account can change, or one that is still being written.
+    pub fn set_task_done(&mut self, calendar: &Calendar, event_id: &str, done: bool) -> bool {
+        if !calendar.is_task_list()
+            || !self.can_write(calendar)
+            || self.is_pending_event(event_id)
+            || self.write_in_flight(&calendar.id, event_id)
+        {
+            return false;
+        }
+        let Some(previous) = self.find_event(&calendar.id, event_id).cloned() else {
+            return false;
+        };
+        if !previous.is_task() || previous.is_done() == done {
+            return false;
+        }
+        let mut event = previous.clone();
+        event.kind = EventKind::Task { done };
+        event.title = task_title(raw_task_title(&previous.title), done);
+        let ticket = self.ticket();
+        self.insert_event(event.clone());
+        self.pending_writes.insert(
+            ticket,
+            PendingWrite {
+                calendar_id: calendar.id.clone(),
+                kind: WriteKind::Update { previous, event },
+            },
+        );
+        self.send(Command::SetTaskDone {
+            ticket,
+            calendar: calendar.clone(),
+            event_id: event_id.to_string(),
+            done,
+        });
+        true
+    }
+
     /// Deletes an event from the UI at once. Returns false when it is unknown or busy.
     pub fn delete_event(&mut self, calendar: &Calendar, event_id: &str) -> bool {
         if self.is_pending_event(event_id) || self.write_in_flight(&calendar.id, event_id) {
@@ -738,7 +809,7 @@ impl Store {
         }
         if self
             .find_event(&calendar.id, event_id)
-            .is_some_and(|e| !e.is_regular())
+            .is_some_and(|e| !e.is_regular() && !e.is_task())
         {
             return false;
         }
@@ -1032,6 +1103,12 @@ impl Store {
                 if changed {
                     self.prefs.save();
                 }
+            }
+            SyncEvent::TasksNeedAccess(email) => {
+                self.problem.get_or_insert_with(|| {
+                    format!("Google Tasks needs your permission for {email}. Sign in again to show tasks.")
+                });
+                self.rsvp_reauth = Some(email);
             }
             SyncEvent::WriteFinished {
                 ticket,
@@ -2357,5 +2434,109 @@ mod tests {
                 .iter()
                 .any(|e| e.id == "pending-1")
         );
+    }
+
+    fn store_with_task() -> (Store, std::sync::mpsc::Receiver<Command>, Calendar) {
+        let (mut s, rx) = store_with_rx();
+        let list = Calendar {
+            id: "me@x/tasks:L1".into(),
+            account: "me@x".into(),
+            remote_id: "tasks:L1".into(),
+            name: "My Tasks".into(),
+            color: 3,
+            primary: false,
+            default_reminders: vec![],
+            selected_upstream: true,
+            writable: true,
+        };
+        let mut cals = s.calendars.clone();
+        cals.push(list.clone());
+        s.apply(SyncEvent::Calendars(cals));
+        s.prefs.rsvp_accounts.insert("me@x".into());
+        let mut task = all_day(&list.id, "t1", date(2026, 10, 21), date(2026, 10, 22));
+        task.title = model::task_title("Buy milk", false);
+        task.kind = EventKind::Task { done: false };
+        s.apply(SyncEvent::Month {
+            calendar_id: list.id.clone(),
+            month: date(2026, 10, 1),
+            events: vec![task],
+        });
+        (s, rx, list)
+    }
+
+    fn shown_task(s: &Store, list: &Calendar) -> Event {
+        s.find_event(&list.id, "t1").cloned().unwrap()
+    }
+
+    #[test]
+    fn ticking_a_task_shows_at_once_and_is_kept_when_google_confirms() {
+        let (mut s, rx, list) = store_with_task();
+        assert!(s.set_task_done(&list, "t1", true));
+        let task = shown_task(&s, &list);
+        assert!(task.is_done());
+        assert_eq!(task.title, "☑ Buy milk");
+        let Command::SetTaskDone { ticket, done, .. } = rx.try_recv().unwrap() else {
+            panic!("expected SetTaskDone");
+        };
+        assert!(done);
+        // Already done: nothing to do, and no second write.
+        assert!(!s.set_task_done(&list, "t1", true));
+        let mut confirmed = task.clone();
+        confirmed.html_link = Some("https://tasks.google.com/t1".into());
+        s.apply(SyncEvent::WriteFinished {
+            ticket,
+            account: "me@x".into(),
+            result: Ok(Some(Box::new(confirmed))),
+        });
+        assert!(shown_task(&s, &list).is_done());
+        assert!(s.problem.is_none());
+    }
+
+    #[test]
+    fn a_refused_tick_is_undone_with_a_message() {
+        let (mut s, rx, list) = store_with_task();
+        assert!(s.set_task_done(&list, "t1", true));
+        let Command::SetTaskDone { ticket, .. } = rx.try_recv().unwrap() else {
+            panic!("expected SetTaskDone");
+        };
+        s.apply(SyncEvent::WriteFinished {
+            ticket,
+            account: "me@x".into(),
+            result: Err(WriteFailure {
+                message: "offline".into(),
+                missing_scope: false,
+            }),
+        });
+        let task = shown_task(&s, &list);
+        assert!(!task.is_done());
+        assert_eq!(task.title, "☐ Buy milk");
+        assert!(s.problem.as_deref().unwrap().contains("offline"));
+    }
+
+    #[test]
+    fn a_task_can_be_deleted() {
+        let (mut s, _rx, list) = store_with_task();
+        assert!(s.delete_event(&list, "t1"));
+        assert!(s.find_event(&list.id, "t1").is_none());
+    }
+
+    #[test]
+    fn a_task_is_not_an_event_to_edit() {
+        let (mut s, _rx, list) = store_with_task();
+        assert!(!s.update_event(&list, "t1", draft("t1")));
+        // Ticking only applies to tasks.
+        let (mut s2, _rx2) = store_with_rx();
+        s2.prefs.rsvp_accounts.insert("me@x".into());
+        let cal = s2.calendar("a").cloned().unwrap();
+        assert!(!s2.set_task_done(&cal, "e1", true));
+        let _ = &mut s;
+    }
+
+    #[test]
+    fn a_missing_tasks_scope_prompts_a_sign_in() {
+        let mut s = store();
+        s.apply(SyncEvent::TasksNeedAccess("me@x".into()));
+        assert_eq!(s.rsvp_reauth.as_deref(), Some("me@x"));
+        assert!(s.problem.as_deref().unwrap().contains("Google Tasks"));
     }
 }
