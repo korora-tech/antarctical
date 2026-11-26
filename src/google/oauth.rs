@@ -23,7 +23,8 @@ pub const EVENTS_SCOPE: &str = "https://www.googleapis.com/auth/calendar.events"
 pub const CALENDAR_LIST_READONLY_SCOPE: &str =
     "https://www.googleapis.com/auth/calendar.calendarlist.readonly";
 pub const RSVP_SCOPES: &str = "https://www.googleapis.com/auth/calendar.events \
-     https://www.googleapis.com/auth/calendar.calendarlist.readonly";
+     https://www.googleapis.com/auth/calendar.calendarlist.readonly \
+     https://www.googleapis.com/auth/tasks";
 
 pub fn scopes_for_reply(enabled: bool) -> &'static str {
     if enabled { RSVP_SCOPES } else { SCOPE }

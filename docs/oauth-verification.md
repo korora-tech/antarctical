@@ -11,6 +11,7 @@ Calendar scopes are **sensitive**, not restricted, so no third-party security as
 | `calendar.readonly` | Every sign-in (default) | `calendarList.list`, `events.list`, `colors.get`: show calendars and events, drive reminders |
 | `calendar.events` | Only after the user enables **Edit events and reply to invitations** for an account (replaces `calendar.readonly` for that account) | `events.patch` to set the user's own attendee response; `events.insert`, `events.patch` and `events.delete` for events the user creates, edits or deletes in the app |
 | `calendar.calendarlist.readonly` | With `calendar.events` | `calendarList.list` and the account email (primary calendar id). `calendar.events` cannot list calendars |
+| `tasks` | With `calendar.events` | Google Tasks: `tasklists.list` and `tasks.list` to show tasks with due dates in the calendar views; `tasks.insert`, `tasks.patch` and `tasks.delete` to add, tick off and delete them. The Google Tasks API must be enabled in the Cloud project |
 
 Nothing else is requested: no `openid`, `userinfo.*`, full `calendar`, or `calendar.app.created`. Those came from commit `eecce94` and were removed by the opt-in RSVP work; the consent screen in the Cloud Console may still list them and must be trimmed to match.
 

@@ -68,7 +68,7 @@ pub fn agent() -> ureq::Agent {
         .into()
 }
 
-fn get<T: serde::de::DeserializeOwned>(
+pub(super) fn get<T: serde::de::DeserializeOwned>(
     agent: &ureq::Agent,
     url: &url::Url,
     token: &str,
@@ -251,6 +251,9 @@ pub fn events(
     from: Timestamp,
     to: Timestamp,
 ) -> Result<Vec<Event>, ApiError> {
+    if calendar.is_task_list() {
+        return super::tasks::tasks(agent, token, calendar, from, to);
+    }
     let mut out = vec![];
     let mut page: Option<String> = None;
     loop {
@@ -637,7 +640,7 @@ fn random_request_id() -> String {
 }
 
 /// Sends a JSON request and returns the response body of a 2xx, or the mapped error.
-fn send_write(
+pub(super) fn send_write(
     agent: &ureq::Agent,
     method: &str,
     url: &url::Url,
@@ -697,6 +700,9 @@ pub fn create_event(
     calendar: &Calendar,
     draft: &EventDraft,
 ) -> Result<Event, ApiError> {
+    if calendar.is_task_list() {
+        return super::tasks::create(agent, token, calendar, draft);
+    }
     create_event_at(agent, token, calendar, draft, BASE)
 }
 
@@ -1142,6 +1148,9 @@ pub fn delete_event(
     calendar: &Calendar,
     event_id: &str,
 ) -> Result<(), ApiError> {
+    if calendar.is_task_list() {
+        return super::tasks::delete(agent, token, calendar, event_id);
+    }
     delete_event_at(agent, token, calendar, event_id, BASE)
 }
 

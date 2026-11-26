@@ -53,6 +53,8 @@ pub enum Problem {
     ReadOnly(String),
     /// Recurrence needs an IANA zone name, which this machine did not report.
     NoZoneName,
+    /// A task cannot repeat, have guests or a video call.
+    TaskUnsupported,
 }
 
 impl Problem {
@@ -64,6 +66,9 @@ impl Problem {
             }
             Problem::ReadOnly(name) => {
                 format!("{name} is read-only for you. Pick another calendar with /name.")
+            }
+            Problem::TaskUnsupported => {
+                "A task can't repeat or have guests. Drop that, or pick an event calendar.".into()
             }
             Problem::NoZoneName => {
                 "Repeating events need a named time zone, and this system did not report one."
@@ -117,6 +122,8 @@ pub fn pick_calendar<'a>(
         return Some(c);
     }
     let rank = |a: &str| accounts.iter().position(|x| x == a).unwrap_or(usize::MAX);
+    // Without a `/name`, an event never lands in a task list.
+    let calendars: Vec<&Calendar> = calendars.iter().filter(|c| !c.is_task_list()).collect();
     let mut accts: Vec<&str> = calendars.iter().map(|c| c.account.as_str()).collect();
     accts.sort_by_key(|a| rank(a));
     accts.dedup();
@@ -124,12 +131,73 @@ pub fn pick_calendar<'a>(
         .iter()
         .find(|a| can_edit(a))
         .or_else(|| accts.first())?;
-    let of_account = || calendars.iter().filter(|c| c.account == *account);
+    let of_account = || calendars.iter().copied().filter(|c| c.account == *account);
     of_account()
         .find(|c| c.primary && c.writable)
         .or_else(|| of_account().find(|c| c.writable))
         .or_else(|| of_account().find(|c| c.primary))
         .or_else(|| of_account().next())
+}
+
+/// The task list a `todo …` goes to: the first one of the first account that can edit.
+fn pick_task_list<'a>(
+    calendars: &'a [Calendar],
+    accounts: &[String],
+    can_edit: impl Fn(&str) -> bool,
+) -> Option<&'a Calendar> {
+    let rank = |a: &str| accounts.iter().position(|x| x == a).unwrap_or(usize::MAX);
+    let mut lists: Vec<&Calendar> = calendars.iter().filter(|c| c.is_task_list()).collect();
+    lists.sort_by_key(|c| (!can_edit(&c.account), rank(&c.account)));
+    lists.into_iter().next()
+}
+
+/// A task: due on a day (the one typed, else the day being viewed), with no time, guests or
+/// repeat. `at …` has no place to go, so it stays part of the title.
+fn resolve_task(
+    parsed: Parsed,
+    calendar: Calendar,
+    anchor: Date,
+    now: &Zoned,
+    can_edit: &impl Fn(&str) -> bool,
+) -> Resolved {
+    let day = match parsed.when {
+        Some(When::AllDay { start, .. }) => start,
+        Some(When::Timed { start, .. }) => start.to_zoned(now.time_zone().clone()).date(),
+        None => anchor,
+    };
+    let mut title = parsed.title;
+    if let Some(location) = parsed.location {
+        title = format!("{title} at {location}");
+    }
+    let problem = if title.trim().is_empty() {
+        Some(Problem::EmptyTitle)
+    } else if !can_edit(&calendar.account) {
+        Some(Problem::EditingOff(calendar.account.clone()))
+    } else if !parsed.guests.is_empty() || parsed.meet || parsed.recurrence.is_some() {
+        Some(Problem::TaskUnsupported)
+    } else {
+        None
+    };
+    Resolved {
+        draft: EventDraft {
+            title: title.trim().to_string(),
+            when: When::AllDay {
+                start: day,
+                end: day.tomorrow().unwrap_or(day),
+            },
+            time_zone: None,
+            location: None,
+            description: None,
+            guests: vec![],
+            meet: false,
+            rrule: None,
+            edit_guests: None,
+            edit_reminders: None,
+            series: None,
+        },
+        calendar,
+        problem,
+    }
 }
 
 /// Turns parsed text into a draft and its target calendar.
@@ -141,13 +209,20 @@ pub fn resolve(
     accounts: &[String],
     can_edit: impl Fn(&str) -> bool,
 ) -> Option<Resolved> {
-    let calendar = pick_calendar(
-        calendars,
-        accounts,
-        parsed.calendar_hint.as_deref(),
-        &can_edit,
-    )?
+    let calendar = if parsed.task && parsed.calendar_hint.is_none() {
+        pick_task_list(calendars, accounts, &can_edit)?
+    } else {
+        pick_calendar(
+            calendars,
+            accounts,
+            parsed.calendar_hint.as_deref(),
+            &can_edit,
+        )?
+    }
     .clone();
+    if calendar.is_task_list() {
+        return Some(resolve_task(parsed, calendar, anchor, now, &can_edit));
+    }
     let when = parsed.when.unwrap_or_else(|| default_when(anchor, now));
     let tz_name = now.time_zone().iana_name().map(str::to_string);
     let problem = if parsed.title.trim().is_empty() {
@@ -424,6 +499,12 @@ impl QuickAddView {
         self.input.focus_handle(cx)
     }
 
+    /// Starts the bar with `text` already typed.
+    pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.input
+            .update(cx, |input, cx| input.set_text(text.to_string(), cx));
+    }
+
     fn resolved(&self, cx: &App) -> Option<Resolved> {
         let store = self.store.read(cx);
         let text = self.input.read(cx).text().to_string();
@@ -488,6 +569,7 @@ impl Render for QuickAddView {
                 .child(hint(
                     "Add guests by email, +meet for a video call, /name picks the calendar",
                 ))
+                .child(hint("Start with todo for a task: todo Buy milk friday"))
                 .into_any_element(),
             Some(r) => {
                 let ev = Store::event_from_draft(&r.calendar, "preview".into(), &r.draft);
@@ -1402,5 +1484,95 @@ mod tests {
         assert!(text_to_when("whenever", &now).is_err());
         assert!(text_to_when("", &now).is_err());
         assert!(text_to_when("tomorrow 2-3pm", &now).is_ok());
+    }
+
+    fn task_list(account: &str, name: &str) -> Calendar {
+        let mut c = cal(account, &Calendar::task_list_remote_id("L1"), name, false);
+        c.color = 0x4285f4;
+        c
+    }
+
+    #[test]
+    fn todo_makes_an_all_day_task_in_the_first_editable_accounts_task_list() {
+        let mut c = cals();
+        c.push(task_list("a@x.com", "My Tasks"));
+        c.push(task_list("b@y.com", "Work Tasks"));
+        let now = now();
+        let only_b = |a: &str| a == "b@y.com";
+        let parsed = quickadd::parse("todo Buy milk friday 3pm", &now);
+        assert!(parsed.task);
+        let r = resolve(parsed, now.date(), &now, &c, &accounts(), only_b).unwrap();
+        assert_eq!(r.calendar.name, "Work Tasks");
+        assert_eq!(r.problem, None);
+        assert_eq!(r.draft.title, "Buy milk");
+        // The time is dropped: a task is due on a day.
+        assert_eq!(
+            r.draft.when,
+            When::AllDay {
+                start: jiff::civil::date(2026, 11, 27),
+                end: jiff::civil::date(2026, 11, 28)
+            }
+        );
+    }
+
+    #[test]
+    fn a_task_cannot_repeat_or_have_guests_and_keeps_its_location_words() {
+        let mut c = cals();
+        c.push(task_list("a@x.com", "My Tasks"));
+        let now = now();
+        let all = |_: &str| true;
+        let r = resolve(
+            quickadd::parse("todo Call Sam every day", &now),
+            now.date(),
+            &now,
+            &c,
+            &accounts(),
+            all,
+        )
+        .unwrap();
+        assert_eq!(r.problem, Some(Problem::TaskUnsupported));
+        let r = resolve(
+            quickadd::parse("todo Pick up parcel at the depot", &now),
+            now.date(),
+            &now,
+            &c,
+            &accounts(),
+            all,
+        )
+        .unwrap();
+        assert_eq!(r.problem, None);
+        assert_eq!(r.draft.title, "Pick up parcel at the depot");
+        // With no date typed, the task is due on the day being viewed.
+        assert_eq!(
+            r.draft.when,
+            When::AllDay {
+                start: now.date(),
+                end: now.date().tomorrow().unwrap()
+            }
+        );
+    }
+
+    #[test]
+    fn events_never_land_in_a_task_list_unless_it_is_named() {
+        let mut c = cals();
+        c.insert(0, task_list("a@x.com", "My Tasks"));
+        let all = |_: &str| true;
+        assert_eq!(
+            pick_calendar(&c, &accounts(), None, all).unwrap().name,
+            "Personal"
+        );
+        assert_eq!(
+            pick_calendar(&c, &accounts(), Some("tasks"), all)
+                .unwrap()
+                .name,
+            "My Tasks"
+        );
+    }
+
+    #[test]
+    fn todo_without_a_task_list_resolves_to_nothing() {
+        let now = now();
+        let parsed = quickadd::parse("todo Buy milk", &now);
+        assert!(resolve(parsed, now.date(), &now, &cals(), &accounts(), |_| true).is_none());
     }
 }

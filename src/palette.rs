@@ -20,6 +20,8 @@ pub enum Action {
     Next,
     View(ViewMode),
     NewEvent,
+    /// Open quick-add for a Google Task.
+    NewTask,
     Refresh,
     Settings,
     GoTo(Date),
@@ -50,6 +52,8 @@ pub struct CalendarRef {
     pub id: String,
     pub name: String,
     pub visible: bool,
+    /// A Google Tasks list rather than a calendar.
+    pub task_list: bool,
 }
 
 /// Every fixed command, then one per saved set and one per calendar.
@@ -66,6 +70,9 @@ pub fn entries(sets: &[String], calendars: &[CalendarRef]) -> Vec<Entry> {
         entry("Refresh", "Ctrl+R", Action::Refresh),
         entry("Settings", "Ctrl+,", Action::Settings),
     ];
+    if calendars.iter().any(|c| c.task_list) {
+        out.insert(1, entry("New task", "todo …", Action::NewTask));
+    }
     out.extend(sets.iter().map(|s| {
         entry(
             format!("Show set: {s}"),
@@ -160,14 +167,32 @@ mod tests {
                     id: "a".into(),
                     name: "Birthdays".into(),
                     visible: true,
+                    task_list: false,
                 },
                 CalendarRef {
                     id: "b".into(),
                     name: "Work".into(),
                     visible: false,
+                    task_list: false,
                 },
             ],
         )
+    }
+
+    #[test]
+    fn new_task_is_offered_only_with_a_task_list() {
+        assert!(!all().iter().any(|e| e.action == Action::NewTask));
+        let with_tasks = entries(
+            &[],
+            &[CalendarRef {
+                id: "t".into(),
+                name: "My Tasks".into(),
+                visible: true,
+                task_list: true,
+            }],
+        );
+        let found = search("task", &with_tasks, &now());
+        assert_eq!(found[0].action, Action::NewTask);
     }
 
     #[test]

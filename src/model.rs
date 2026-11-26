@@ -43,7 +43,25 @@ fn writable_by_default() -> bool {
     true
 }
 
+/// Google Tasks lists are shown as calendars whose `remote_id` carries this prefix.
+const TASK_LIST_PREFIX: &str = "tasks:";
+
 impl Calendar {
+    /// Whether this "calendar" is really a Google Tasks list.
+    pub fn is_task_list(&self) -> bool {
+        self.remote_id.starts_with(TASK_LIST_PREFIX)
+    }
+
+    /// The Google Tasks list id of a task list.
+    pub fn task_list_id(&self) -> Option<&str> {
+        self.remote_id.strip_prefix(TASK_LIST_PREFIX)
+    }
+
+    /// The `remote_id` of the task list `list_id`.
+    pub fn task_list_remote_id(list_id: &str) -> String {
+        format!("{TASK_LIST_PREFIX}{list_id}")
+    }
+
     /// Emails never contain '/', so the key splits unambiguously on its first '/'.
     pub fn key(account: &str, remote_id: &str) -> String {
         format!("{account}/{remote_id}")
@@ -153,6 +171,11 @@ pub enum EventKind {
     OutOfOffice,
     FocusTime,
     WorkingLocation,
+    /// A Google Task with a due date, shown on that day. Lives in a task-list "calendar" (see
+    /// [`Calendar::is_task_list`]).
+    Task {
+        done: bool,
+    },
 }
 
 impl EventKind {
@@ -172,8 +195,23 @@ impl EventKind {
             Self::OutOfOffice => Some("Out of office"),
             Self::FocusTime => Some("Focus time"),
             Self::WorkingLocation => Some("Working location"),
+            Self::Task { done: false } => Some("Task"),
+            Self::Task { done: true } => Some("Task · done"),
         }
     }
+}
+
+/// The marker a task's title carries in the views: the one place a task shows whether it is done.
+pub fn task_title(raw: &str, done: bool) -> String {
+    format!("{} {raw}", if done { "☑" } else { "☐" })
+}
+
+/// A task's title without the marker [`task_title`] adds.
+pub fn raw_task_title(shown: &str) -> &str {
+    shown
+        .strip_prefix("☑ ")
+        .or_else(|| shown.strip_prefix("☐ "))
+        .unwrap_or(shown)
 }
 
 impl Event {
@@ -182,6 +220,16 @@ impl Event {
     /// editor handles.
     pub fn is_regular(&self) -> bool {
         self.kind == EventKind::Regular
+    }
+
+    /// Whether this is a Google Task rather than a calendar event.
+    pub fn is_task(&self) -> bool {
+        matches!(self.kind, EventKind::Task { .. })
+    }
+
+    /// Whether this is a task that has been ticked off.
+    pub fn is_done(&self) -> bool {
+        matches!(self.kind, EventKind::Task { done: true })
     }
 
     /// Whether this is one occurrence of a repeating series. Google names those

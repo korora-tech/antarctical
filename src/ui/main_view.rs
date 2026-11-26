@@ -32,7 +32,7 @@ use super::widgets::{
 };
 use super::{
     Back, CloseWindow, EditEvent, NewEvent, Next, OpenPalette, OpenSettings, Previous, Quit,
-    Refresh, ShowAgenda, ShowDay, ShowMonth, ShowWeek, Today,
+    Refresh, ShowAgenda, ShowDay, ShowMonth, ShowWeek, Today, ToggleTask,
 };
 use crate::branding;
 use crate::config::ViewMode;
@@ -248,6 +248,12 @@ impl MainView {
             Action::Next => self.step(1, cx),
             Action::View(view) => self.set_view(view, cx),
             Action::NewEvent => self.open_quick_add(window, cx),
+            Action::NewTask => {
+                self.open_quick_add(window, cx);
+                if let Some(Compose::QuickAdd(view)) = &self.compose {
+                    view.update(cx, |view, cx| view.set_text("todo ", cx));
+                }
+            }
             Action::Refresh => self.store.read(cx).send(Command::Refresh),
             Action::Settings => self.show_settings(window, cx),
             Action::GoTo(date) => self.focus_date(date, window, cx),
@@ -290,6 +296,53 @@ impl MainView {
         cx.notify();
     }
 
+    /// Ticks the selected task off, or back on.
+    fn toggle_selected_task(&mut self, cx: &mut Context<Self>) {
+        if self.compose.is_some() || self.screen != Screen::Calendar {
+            return;
+        }
+        let Some((cal_id, ev_id)) = self.selected.clone() else {
+            return;
+        };
+        self.store.update(cx, |store, cx| {
+            let Some(done) = store.find_event(&cal_id, &ev_id).map(Event::is_done) else {
+                return;
+            };
+            let Some(calendar) = store.calendar(&cal_id).cloned() else {
+                return;
+            };
+            if store
+                .find_event(&cal_id, &ev_id)
+                .is_some_and(Event::is_task)
+                && store.set_task_done(&calendar, &ev_id, !done)
+            {
+                cx.notify();
+            }
+        });
+    }
+
+    /// Deletes the selected task.
+    fn delete_selected_task(&mut self, cx: &mut Context<Self>) {
+        let Some((cal_id, ev_id)) = self.selected.clone() else {
+            return;
+        };
+        self.store.update(cx, |store, cx| {
+            let Some(calendar) = store.calendar(&cal_id).cloned() else {
+                return;
+            };
+            if store
+                .find_event(&cal_id, &ev_id)
+                .is_some_and(Event::is_task)
+                && store.can_write(&calendar)
+                && store.delete_event(&calendar, &ev_id)
+            {
+                cx.notify();
+            }
+        });
+        self.selected = None;
+        cx.notify();
+    }
+
     /// Opens the editor for the selected event, when its account may edit.
     fn open_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.compose.is_some() || self.screen != Screen::Calendar {
@@ -302,6 +355,16 @@ impl MainView {
         let Some(event) = store.find_event(&cal_id, &ev_id).cloned() else {
             return;
         };
+        if event.is_task() {
+            self.store.update(cx, |store, cx| {
+                store.notice = Some((
+                    "Tasks can't be edited here yet. Press x to tick it off.".into(),
+                    std::time::Instant::now(),
+                ));
+                cx.notify();
+            });
+            return;
+        }
         let calendar = store.calendar(&cal_id).cloned();
         let editable = event.is_regular() && calendar.as_ref().is_some_and(|c| store.can_write(c));
         let read_only = calendar.as_ref().is_some_and(|c| !c.writable);
@@ -1167,6 +1230,53 @@ impl MainView {
             );
         }
 
+        let task_calendar = (event.is_task() && !store.is_pending_event(&event.id))
+            .then(|| {
+                store
+                    .calendar(&event.calendar_id)
+                    .filter(|c| store.can_write(c))
+            })
+            .flatten();
+        if task_calendar.is_some() {
+            let done = event.is_done();
+            sections.push(
+                div()
+                    .flex()
+                    .gap(px(8.0))
+                    .child(
+                        button(
+                            "toggle-task",
+                            if done { "Mark not done" } else { "Mark done" },
+                            if done {
+                                ButtonStyle::Secondary
+                            } else {
+                                ButtonStyle::Primary
+                            },
+                            Some(
+                                self.listener_click(cx, |this, _, cx| {
+                                    this.toggle_selected_task(cx)
+                                }),
+                            ),
+                        )
+                        .flex_1()
+                        .h(px(DETAIL_ACTION_H)),
+                    )
+                    .child(
+                        button(
+                            "delete-task",
+                            "Delete",
+                            ButtonStyle::Secondary,
+                            Some(
+                                self.listener_click(cx, |this, _, cx| {
+                                    this.delete_selected_task(cx)
+                                }),
+                            ),
+                        )
+                        .h(px(DETAIL_ACTION_H)),
+                    ),
+            );
+        }
+
         if let Some(calendar) = reply_calendar {
             let pending = store.reply_pending(&event.calendar_id, &event.id);
             let event_for_reply = Event::clone(event);
@@ -1548,6 +1658,7 @@ impl Render for MainView {
                 cx.listener(|this, _: &NewEvent, window, cx| this.open_quick_add(window, cx)),
             )
             .on_action(cx.listener(|this, _: &EditEvent, window, cx| this.open_editor(window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleTask, _, cx| this.toggle_selected_task(cx)))
             .on_action(
                 cx.listener(|this, _: &OpenPalette, window, cx| this.open_palette(window, cx)),
             )
